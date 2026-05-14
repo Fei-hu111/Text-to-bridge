@@ -1,0 +1,25 @@
+{
+  "project_name": "simple_girder_bridge",
+  "bridge_type": "simply_supported_girder",
+  "analysis_type": "static",
+  "geometry": {
+    "span_m": 30.0,
+    "deck_width_m": 10.0,
+    "girder_count": 4
+  },
+  "materials": {
+    "concrete": {
+      "elastic_modulus_pa": 34500000000.0,
+      "poisson_ratio": 0.2,
+      "density_kg_m3": 2500
+    }
+  },
+  "loads": {
+    "gravity": true,
+    "uniform_deck_load_pa": 5000
+  },
+  "boundary_conditions": {
+    "left_support": "pinned",
+    "right_support": "roller"
+  }
+}

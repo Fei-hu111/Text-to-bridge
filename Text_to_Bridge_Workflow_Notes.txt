@@ -1,0 +1,620 @@
+﻿Text to Bridge: Python + Abaqus 桥梁有限元分析 Agent Workflow 说明文档
+====================================================================
+
+一、项目目标
+----------
+
+Text to Bridge 的目标是构建一个可扩展的桥梁有限元分析 Agent Workflow 系统。
+系统能够从结构化 JSON 桥梁描述出发，自动生成 Abaqus 输入文件，调用 Abaqus 求解，
+监控求解过程，诊断错误，执行规则化修复，并最终提取分析结果、生成报告。
+
+第一版重点不是追求复杂桥梁建模精度，而是验证一条完整、清晰、可维护的自动化工程链路：
+
+1. 读取桥梁任务 JSON。
+2. 校验参数与任务类型。
+3. 自动生成 Abaqus .inp 文件。
+4. 调用 Abaqus/Standard 进行分析。
+5. 监控 .log、.msg、.dat、.sta、.odb 等输出。
+6. 解析错误与警告。
+7. 按确定性规则修复 .inp 文件。
+8. 重新提交分析，直到成功或达到最大修复次数。
+9. 从 .dat 或 .odb 中提取分析结果。
+10. 生成 JSON 与 Markdown 报告。
+
+
+二、项目目录结构
+--------------
+
+当前第一版项目结构如下：
+
+bridge_fem_agent/
+  main.py
+  config.py
+
+  schemas/
+    bridge_schema.py
+
+  inp/
+    inp_builder.py
+    inp_parser.py
+    inp_editor.py
+
+  runner/
+    abaqus_runner.py
+    job_monitor.py
+
+  diagnosis/
+    log_parser.py
+    error_classifier.py
+
+  repair/
+    repair_rules.py
+    repair_engine.py
+
+  results/
+    dat_extractor.py
+    odb_extractor.py
+    abaqus_odb_extract.py
+    report_writer.py
+
+  examples/
+    simple_girder_bridge.json
+
+  tests/
+    test_workflow.py
+
+项目根目录还有：
+
+main.py
+README.md
+.gitignore
+Text_to_Bridge_Workflow_Notes.txt
+
+
+三、Workflow 总体思路
+-------------------
+
+1. 用户输入 JSON
+
+用户通过 JSON 文件描述桥梁任务，例如：
+
+{
+  "project_name": "simple_girder_bridge",
+  "bridge_type": "simply_supported_girder",
+  "analysis_type": "static",
+  "geometry": {
+    "span_m": 30.0,
+    "deck_width_m": 10.0,
+    "girder_count": 4
+  },
+  "materials": {
+    "concrete": {
+      "elastic_modulus_pa": 3.45e10,
+      "poisson_ratio": 0.2,
+      "density_kg_m3": 2500
+    }
+  },
+  "loads": {
+    "gravity": true,
+    "uniform_deck_load_pa": 5000
+  },
+  "boundary_conditions": {
+    "left_support": "pinned",
+    "right_support": "roller"
+  }
+}
+
+2. Schema 校验
+
+bridge_fem_agent/schemas/bridge_schema.py 使用 dataclasses 定义数据结构：
+
+- BridgeTask
+- Geometry
+- Material
+- Loads
+- BoundaryConditions
+
+第一版支持：
+
+- bridge_type: simply_supported_girder
+- analysis_type: static 或 frequency
+- 支座类型: pinned、roller、fixed
+
+系统会检查跨度、桥宽、材料参数等是否为合理正值。
+
+3. 自动生成 Abaqus .inp
+
+bridge_fem_agent/inp/inp_builder.py 负责生成初始输入文件：
+
+jobname_attempt_0.inp
+
+第一版采用 B31 梁单元，建立一个简化的 3D 梁桥模型。生成内容包括：
+
+- *Heading
+- *Material
+- *Part
+- *Node
+- *Element, type=B31
+- *Nset
+- *Elset
+- *Beam Section
+- *Assembly
+- *Boundary
+- *Step
+- *Static 或 *Frequency
+- *Dload
+- *Output
+
+重要约束：
+
+系统绝不覆盖原始或历史 .inp 文件。每次修复都会生成新文件：
+
+jobname_attempt_0.inp
+jobname_attempt_1.inp
+jobname_attempt_2.inp
+
+4. 调用 Abaqus
+
+bridge_fem_agent/runner/abaqus_runner.py 封装 Abaqus 调用逻辑。
+
+默认调用格式：
+
+abaqus job=xxx input=xxx.inp interactive
+
+在本机实际识别到的 Abaqus 命令为：
+
+D:\SIMULIA\Commands\abaqus.bat
+
+Windows 下 Abaqus 常通过 .bat 启动，因此 runner 已专门兼容 .bat/.cmd，通过 shell mediation 调用，
+避免 subprocess 直接 CreateProcess .bat 时失败。
+
+5. Job 监控
+
+bridge_fem_agent/runner/job_monitor.py 收集以下文件：
+
+.log
+.msg
+.dat
+.sta
+.odb
+.stdout.txt
+.stderr.txt
+
+其中 .stdout.txt 与 .stderr.txt 是 workflow 主动保存的 Abaqus 命令行输出，便于诊断启动错误、
+license 错误、WMI 错误等非 .inp 层面的失败。
+
+6. 日志解析与错误分类
+
+bridge_fem_agent/diagnosis/log_parser.py 从 Abaqus 输出中提取真正有诊断价值的行。
+
+bridge_fem_agent/diagnosis/error_classifier.py 将错误分类为：
+
+- environment_error
+- missing_set
+- undefined_material
+- element_type_error
+- boundary_condition_error
+- rigid_body_zero_pivot
+- step_definition_error
+- load_definition_error
+- non_convergence
+- unknown
+
+第一版采用 deterministic rule-based classification，避免依赖外部 LLM。
+
+7. 规则化修复
+
+bridge_fem_agent/repair/repair_rules.py 和 repair_engine.py 负责自动修复。
+
+目前支持的修复方向包括：
+
+- 缺失 LEFT_SUPPORT / RIGHT_SUPPORT node set 时自动补充。
+- 缺失 CONCRETE 材料时自动补充默认材料。
+- 缺失 step 时自动补充静力分析 step。
+- zero pivot / rigid body motion 时增加最小转动约束。
+- 不收敛时加入保守 static controls。
+
+所有修复动作都会记录到最终 report.json 和 report.md。
+
+8. 结果提取
+
+结果提取包含两条路径：
+
+A. dat_extractor.py
+
+用于 dry-run 或带有标准结果标记的 .dat 文件。可提取：
+
+- 最大位移
+- 最大应力
+- 支座反力
+- 模态频率
+
+B. odb_extractor.py + abaqus_odb_extract.py
+
+真实 Abaqus 分析成功后，系统调用：
+
+abaqus python abaqus_odb_extract.py <odb_path> <output_json>
+
+从 .odb 中读取：
+
+- U 场输出的最大位移
+- S 场输出的最大应力，优先使用 Mises
+- LEFT_SUPPORT 与 RIGHT_SUPPORT 的 RF 支座反力
+- frequency 分析时的模态频率
+
+9. 报告生成
+
+bridge_fem_agent/results/report_writer.py 输出：
+
+report.json
+report.md
+
+报告内容包括：
+
+- 项目名称
+- 桥梁类型
+- 分析类型
+- 是否 dry-run
+- 每次 attempt 的输入文件、job name、状态、return code
+- 诊断 issues
+- 修复 repairs
+- 提取结果
+- ODB 提取状态
+
+
+四、关键参数设置
+--------------
+
+1. 命令行参数
+
+基本 dry-run 测试：
+
+python main.py --input bridge_fem_agent\examples\simple_girder_bridge.json --workdir runs\simple_girder_bridge --max-repairs 3 --dry-run
+
+真实 Abaqus 分析：
+
+python main.py --input bridge_fem_agent\examples\simple_girder_bridge.json --workdir runs\simple_girder_bridge_abaqus_final --max-repairs 3
+
+主要参数：
+
+--input
+  输入 JSON 文件路径。
+
+--workdir
+  输出工作目录。建议放在 E 盘，例如 runs\xxx，避免占用 C/D 盘。
+
+--max-repairs
+  最大自动修复次数。当前默认建议为 3。
+
+--dry-run
+  不调用 Abaqus，生成模拟输出，用于没有 Abaqus 的机器测试 workflow。
+
+--abaqus-command
+  指定 Abaqus 命令。如果系统环境变量中找不到 abaqus，可设置为具体路径。
+
+--log-level
+  日志等级，可选 DEBUG、INFO、WARNING、ERROR。
+
+2. JSON 参数
+
+project_name
+  项目名，同时作为 Abaqus job name 和文件名前缀。
+
+bridge_type
+  第一版支持 simply_supported_girder。
+
+analysis_type
+  static 或 frequency。
+
+geometry.span_m
+  桥跨长度，单位 m。
+
+geometry.deck_width_m
+  桥面宽度，单位 m。
+
+geometry.girder_count
+  主梁数量。第一版作为 schema 参数保留，后续可用于多梁建模。
+
+materials.concrete.elastic_modulus_pa
+  混凝土弹性模量，单位 Pa。
+
+materials.concrete.poisson_ratio
+  泊松比，范围 [0, 0.5)。
+
+materials.concrete.density_kg_m3
+  密度，单位 kg/m3。
+
+loads.gravity
+  是否施加重力。
+
+loads.uniform_deck_load_pa
+  桥面均布面荷载，单位 Pa。第一版会按桥面宽度折算为线荷载。
+
+boundary_conditions.left_support
+  左支座类型，支持 pinned、roller、fixed。
+
+boundary_conditions.right_support
+  右支座类型，支持 pinned、roller、fixed。
+
+3. 模型生成参数
+
+WorkflowConfig.generated_node_count = 11
+
+即第一版默认沿桥跨生成 11 个节点、10 个 B31 梁单元。
+
+梁截面为矩形截面：
+
+截面宽度 = deck_width_m
+名义高度 = max(0.8, span_m / 30.0)
+
+示例中：
+
+span_m = 30.0
+deck_width_m = 10.0
+名义高度 = max(0.8, 30 / 30) = 1.0 m
+
+均布线荷载：
+
+uniform_line_load = uniform_deck_load_pa * deck_width_m
+
+示例中：
+
+uniform_line_load = 5000 * 10 = 50000 N/m
+
+重力：
+
+*Dload
+EALL, GRAV, 9.81, 0., 0., -1.
+
+
+五、真实 Abaqus 测试记录
+---------------------
+
+最终成功运行目录：
+
+E:\Desktop\Text to bridge\runs\simple_girder_bridge_abaqus_final
+
+真实 ODB 文件：
+
+E:\Desktop\Text to bridge\runs\simple_girder_bridge_abaqus_final\simple_girder_bridge.odb
+
+状态文件 .sta 显示：
+
+THE ANALYSIS HAS COMPLETED SUCCESSFULLY
+
+最终报告：
+
+E:\Desktop\Text to bridge\runs\simple_girder_bridge_abaqus_final\report.json
+E:\Desktop\Text to bridge\runs\simple_girder_bridge_abaqus_final\report.md
+
+提取结果：
+
+最大位移:
+0.018232727089617318
+
+最大应力:
+4929828.5
+
+左支座反力合力:
+3754424.2651170897
+
+左支座反力分量:
+[1.1641532182693481e-10, 750000.0, 3678750.0]
+
+右支座反力合力:
+3754424.2651170897
+
+右支座反力分量:
+[0.0, 750000.0, 3678750.0]
+
+模态频率:
+当前 static 分析为空列表。
+
+
+六、开发过程中发现并修正的问题
+--------------------------
+
+1. Abaqus.bat 调用问题
+
+最初 subprocess 直接调用 abaqus 时，在 Windows 下识别到的是：
+
+D:\SIMULIA\Commands\abaqus.bat
+
+直接 CreateProcess 启动 .bat 会失败。因此 runner 增加了对 .bat/.cmd 的 shell 调用兼容。
+
+2. 沙箱内 WMI/CPU 检测问题
+
+第一次在受限环境中运行 Abaqus 出现：
+
+Abaqus Error: The number of cpus (1) exceeds the number of cpus available (-1).
+getWMI: Query for operating system name failed.
+
+这属于 Abaqus 环境检测问题，不是 .inp 模型问题。
+后续通过沙箱外调用真实 Abaqus 后，license checkout 成功，分析流程正常运行。
+
+3. *Material 位置错误
+
+初始生成器把 *Material 放在 *Part 内，Abaqus 报错：
+
+***ERROR: in keyword *MATERIAL
+The keyword is misplaced.
+
+已修正为将 *Material 放在 model level，即 *Part 之前。
+
+4. ODB 提取 API 兼容问题
+
+Abaqus Python 的 Repository 对象没有 .get() 方法。
+已改为通过 keys() 判断并使用 assembly.nodeSets[set_name] 访问。
+
+5. 日志误判问题
+
+Abaqus .msg 中存在一些正常的控制参数文本，例如：
+
+0 ERROR MESSAGES
+0 WARNING MESSAGES
+DIVERGENCE CHECK
+
+这些不是实际错误或警告。日志解析器已加入过滤规则，避免报告噪声。
+
+
+七、创新点
+--------
+
+1. Text-to-FEM 自动化链路
+
+系统把自然工程语义转换为结构化 JSON，再由 JSON 生成 Abaqus 输入文件。
+这为后续接入自然语言解析或 LLM Agent 打下基础。
+
+2. Agent Workflow 架构
+
+虽然第一版没有接入外部 LLM API，但模块划分已经符合 Multi-Agent Tool 化思路：
+
+- Schema Agent: 负责输入理解与校验。
+- INP Builder Agent: 负责建模与文件生成。
+- Runner Agent: 负责 Abaqus 调用。
+- Monitor Agent: 负责输出监控。
+- Diagnosis Agent: 负责错误解析与分类。
+- Repair Agent: 负责规则化修复。
+- Result Agent: 负责结果提取。
+- Report Agent: 负责报告生成。
+
+未来可以把每个模块包装为 LLM Agent 的 Tool。
+
+3. Deterministic Rule-Based Repair
+
+第一版优先使用确定性规则，而不是直接让 LLM 修改 .inp。
+好处是：
+
+- 可解释
+- 可复现
+- 便于审计
+- 适合工程软件的严谨要求
+
+4. 不覆盖原始输入文件
+
+每次自动修复都生成新的 attempt 文件：
+
+jobname_attempt_0.inp
+jobname_attempt_1.inp
+jobname_attempt_2.inp
+
+这保证了完整的追溯链。
+
+5. 同时支持 dry-run 和真实 Abaqus
+
+dry-run 让 workflow 在没有 Abaqus 的机器上也能测试。
+真实 Abaqus 模式则可以完成工程求解和 ODB 结果提取。
+
+6. ODB 自动结果提取
+
+系统不只检查 Abaqus 是否运行成功，还进一步调用 Abaqus Python 读取 ODB，
+提取最大位移、最大应力和支座反力。
+
+7. 面向低磁盘占用的工作流
+
+项目无第三方 Python 依赖。
+运行目录可指定在 E 盘，例如：
+
+E:\Desktop\Text to bridge\runs
+
+避免在 C/D 盘安装依赖或堆积临时分析数据。
+
+8. 面向未来 LLM 的 TODO 接口
+
+代码中保留了 TODO 标记，用于未来加入：
+
+- LLM 建模策略选择
+- LLM 错误解释
+- LLM 修复建议
+- LLM 多方案建模对比
+- LLM 报告润色
+
+
+八、后续扩展方向
+--------------
+
+1. 支持更复杂桥型
+
+- 连续梁桥
+- 多跨梁桥
+- 箱梁桥
+- 桁架桥
+- 拱桥
+- 斜拉桥
+- 悬索桥
+
+2. 支持更多单元类型
+
+- B31/B32 梁单元
+- S4R 壳单元
+- C3D8R 实体单元
+- Connector 单元
+- Spring/Dashpot 支座单元
+
+3. 支持更真实的荷载体系
+
+- 车辆荷载
+- 车道荷载
+- 温度荷载
+- 风荷载
+- 地震反应谱
+- 移动荷载
+
+4. 支持更完整的边界与支座
+
+- 固定支座
+- 活动支座
+- 弹性支座
+- 盆式支座
+- 摩擦摆支座
+
+5. 增强错误修复
+
+- 自动识别 set 名称拼写错误
+- 自动修正材料引用
+- 自动修正截面定义
+- 自动识别自由刚体运动
+- 自动添加弱弹簧或稳定化参数
+- 自动降阶或调整增量步
+
+6. 增强结果后处理
+
+- 绘制位移包络图
+- 绘制弯矩、剪力、应力云图
+- 提取关键截面结果
+- 输出 Excel/CSV
+- 自动生成工程计算书
+
+7. 接入 LLM Multi-Agent
+
+未来可形成如下多智能体流程：
+
+Natural Language Agent
+  -> JSON Schema Agent
+  -> FEM Model Agent
+  -> Abaqus Runner Agent
+  -> Diagnosis Agent
+  -> Repair Agent
+  -> Result Agent
+  -> Report Agent
+
+第一版代码已经为这种架构预留了模块边界。
+
+
+九、当前版本定位
+--------------
+
+当前版本是 Text to Bridge 的 V0.1 原型。
+
+它已经证明：
+
+1. JSON 到 Abaqus .inp 的自动生成可行。
+2. Python subprocess 可真实调用本机 Abaqus。
+3. Abaqus 输出监控与错误分类可行。
+4. 规则化修复框架可行。
+5. Abaqus Python ODB 自动结果提取可行。
+6. 最终报告自动生成可行。
+
+当前版本仍是简化梁桥模型，不应直接作为正式工程设计依据。
+它更适合作为自动化有限元 Agent Workflow 的技术底座。
+
