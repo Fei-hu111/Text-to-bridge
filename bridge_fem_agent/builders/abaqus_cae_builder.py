@@ -82,6 +82,144 @@ def build_model():
     supports = plan["supports"]
     loads = plan["loads"]
 
+    if plan["idealization"]["selected_model_level"] == "solid":
+        length = geometry["total_length_m"]
+        width = section_plan["width_m"]
+        height = section_plan["height_m"]
+        tol = max(mesh_plan["target_size_m"] * 0.55, 1.0e-6)
+
+        sketch = model.ConstrainedSketch(name="solid_girder_profile", sheetSize=max(10.0, length * 1.2))
+        sketch.rectangle(point1=(0.0, -width / 2.0), point2=(length, width / 2.0))
+        part = model.Part(name="SolidMainGirder", dimensionality=THREE_D, type=DEFORMABLE_BODY)
+        part.BaseSolidExtrude(depth=height, sketch=sketch)
+        del model.sketches["solid_girder_profile"]
+
+        for x_m in geometry["wire_breakpoints_m"][1:-1]:
+            datum = part.DatumPlaneByPrincipalPlane(principalPlane=YZPLANE, offset=x_m)
+            part.PartitionCellByDatumPlane(cells=part.cells[:], datumPlane=part.datums[datum.id])
+
+        material_key = material_plan["primary_material"]
+        material_name = abaqus_name(material_key)
+        material = material_plan["materials"][material_key]
+        model.Material(name=material_name)
+        model.materials[material_name].Density(table=((material["density_kg_m3"],),))
+        model.materials[material_name].Elastic(table=((material["elastic_modulus_pa"], material["poisson_ratio"]),))
+        solid_section_name = abaqus_name(section_plan["name"] + "_Solid")
+        model.HomogeneousSolidSection(name=solid_section_name, material=material_name, thickness=None)
+        part.SectionAssignment(region=regionToolset.Region(cells=part.cells[:]), sectionName=solid_section_name)
+
+        elem_code = C3D8R
+        elem_types = (
+            ElemType(elemCode=elem_code, elemLibrary=STANDARD),
+            ElemType(elemCode=C3D6, elemLibrary=STANDARD),
+            ElemType(elemCode=C3D4, elemLibrary=STANDARD),
+        )
+        part.setMeshControls(regions=part.cells[:], elemShape=HEX, technique=STRUCTURED)
+        part.setElementType(regions=(part.cells[:],), elemTypes=elem_types)
+        part.seedPart(size=mesh_plan["target_size_m"], deviationFactor=mesh_plan["deviation_factor"], minSizeFactor=mesh_plan["min_size_factor"])
+        part.generateMesh()
+
+        assembly = model.rootAssembly
+        assembly.DatumCsysByDefault(CARTESIAN)
+        instance = assembly.Instance(name="SolidMainGirder-1", part=part, dependent=ON)
+        assembly.Set(cells=instance.cells[:], name="SOLID_MAIN_GIRDER")
+
+        top_faces = tuple(face for face in instance.faces if abs(face.pointOn[0][2] - height) <= tol)
+        if top_faces:
+            try:
+                assembly.Surface(side1Faces=top_faces, name="DECK_TOP")
+            except Exception:
+                try:
+                    assembly.Surface(side2Faces=top_faces, name="DECK_TOP")
+                except Exception:
+                    pass
+        top_nodes = tuple(node for node in instance.nodes if abs(node.coordinates[2] - height) <= tol)
+        if top_nodes:
+            top_node_labels = tuple(node.label for node in top_nodes)
+            assembly.Set(nodes=instance.nodes.sequenceFromLabels(top_node_labels), name="DECK_TOP_NODES")
+
+        for support in supports:
+            support_name = abaqus_name(support["name"])
+            support_nodes = tuple(
+                node for node in instance.nodes
+                if abs(node.coordinates[0] - support["x_m"]) <= tol and abs(node.coordinates[2]) <= tol
+            )
+            if not support_nodes:
+                support_nodes = tuple(
+                    node for node in instance.nodes
+                    if abs(node.coordinates[0] - support["x_m"]) <= tol
+                )
+            support_node_labels = tuple(node.label for node in support_nodes)
+            assembly.Set(nodes=instance.nodes.sequenceFromLabels(support_node_labels), name=support_name)
+
+        if plan["analysis_type"] == "frequency":
+            model.FrequencyStep(name="FrequencyStep", previous="Initial", numEigen=10)
+            active_step = "FrequencyStep"
+        else:
+            model.StaticStep(name="LoadStep", previous="Initial", initialInc=0.1, maxInc=0.2, nlgeom=OFF)
+            active_step = "LoadStep"
+
+        for support in supports:
+            dofs = support["dofs"]
+            support_name = abaqus_name(support["name"])
+            model.DisplacementBC(
+                name=abaqus_name("BC_" + support["name"]),
+                createStepName="Initial",
+                region=assembly.sets[support_name],
+                u1=abaqus_value(dofs.get("u1")),
+                u2=abaqus_value(dofs.get("u2")),
+                u3=abaqus_value(dofs.get("u3")),
+                ur1=UNSET,
+                ur2=UNSET,
+                ur3=UNSET,
+                amplitude=UNSET,
+                distributionType=UNIFORM,
+                fieldName="",
+                localCsys=None,
+            )
+
+        for load in loads:
+            if load["type"] == "gravity":
+                model.Gravity(name=abaqus_name(load["name"]), createStepName=active_step, comp3=load["components"]["comp3"], distributionType=UNIFORM, field="")
+            elif load["type"] == "surface_pressure":
+                if "DECK_TOP" in assembly.surfaces.keys():
+                    model.Pressure(name=abaqus_name(load["name"]), createStepName=active_step, region=assembly.surfaces["DECK_TOP"], magnitude=load["pressure_pa"], distributionType=UNIFORM, field="")
+                elif "DECK_TOP_NODES" in assembly.sets.keys():
+                    nodal_force = -load["pressure_pa"] * length * width / max(len(top_nodes), 1)
+                    model.ConcentratedForce(name=abaqus_name(load["name"] + "_EquivalentNodal"), createStepName=active_step, region=assembly.sets["DECK_TOP_NODES"], cf3=nodal_force)
+            elif load["type"] == "concentrated_force":
+                target_set = abaqus_name(supports[-1]["name"])
+                kwargs = {{}}
+                direction = load.get("direction", "z").lower()
+                if direction == "x":
+                    kwargs["cf1"] = load["value"]
+                elif direction == "y":
+                    kwargs["cf2"] = load["value"]
+                else:
+                    kwargs["cf3"] = load["value"]
+                model.ConcentratedForce(name=abaqus_name(load["name"]), createStepName=active_step, region=assembly.sets[target_set], **kwargs)
+
+        model.FieldOutputRequest(name="F-Output-Bridge", createStepName=active_step, variables=("S", "U", "RF"))
+        model.HistoryOutputRequest(name="H-Output-Reactions", createStepName=active_step, variables=("RF1", "RF2", "RF3"), region=assembly.sets[abaqus_name(supports[0]["name"])])
+        job = mdb.Job(
+            name=project,
+            model=model_name,
+            description="Generated solid bridge model by Bridge FEM Agent V2",
+            type=ANALYSIS,
+            memory=90,
+            memoryUnits=PERCENTAGE,
+            explicitPrecision=SINGLE,
+            nodalOutputPrecision=SINGLE,
+            echoPrint=OFF,
+            modelPrint=OFF,
+            contactPrint=OFF,
+            historyPrint=OFF,
+        )
+        job.writeInput(consistencyChecking=OFF)
+        mdb.saveAs(pathName=project + ".cae")
+        print("Generated solid model " + project + ".cae and " + project + ".inp")
+        return
+
     sketch = model.ConstrainedSketch(name="girder_axis_sketch", sheetSize=max(10.0, geometry["total_length_m"] * 1.2))
     points = geometry["girder_axis"]
     for start, end in zip(points[:-1], points[1:]):

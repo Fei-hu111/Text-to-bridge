@@ -19,15 +19,15 @@ class IdealizationAgent:
         if model_level not in {"beam", "shell", "solid"}:
             state.note("IdealizationAgent", f"Unsupported model_level '{model_level}', falling back to beam.", "warning")
             model_level = "beam"
-        if model_level != "beam":
-            state.note("IdealizationAgent", "First V2 generator emits a beam CAE model; requested level is recorded for future expansion.", "warning")
+        element_type = model.mesh.element_type or ("C3D8R" if model_level == "solid" else "B31")
+        if model_level == "solid" and element_type.upper() == "B31":
+            element_type = "C3D8R"
         state.model_plan["idealization"] = {
-            "selected_model_level": "beam",
+            "selected_model_level": model_level,
             "requested_model_level": requested,
-            "element_type": model.mesh.element_type or "B31",
-            "reason": "Samples emphasize wire/beam bridge models and beam models are reviewable for global bridge behaviour.",
+            "element_type": element_type,
+            "reason": "Requested model level is honored; samples provide both wire/beam and solid-extrude modelling patterns.",
         }
-        state.note("IdealizationAgent", "Selected B31 beam idealization for reviewable global bridge model.")
+        state.note("IdealizationAgent", f"Selected {model_level} idealization with {element_type} elements.")
         # TODO: add LLM-assisted choice between beam/shell/solid/mixed idealizations.
         return state
-

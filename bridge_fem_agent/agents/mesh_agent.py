@@ -15,9 +15,11 @@ class MeshAgent:
         if target is None:
             target = max(shortest_span / max(model.mesh.elements_per_span, 1), shortest_span / 80.0)
         target = max(float(target), 0.05)
+        idealization = state.model_plan.get("idealization", {})
+        element_type = idealization.get("element_type", model.mesh.element_type)
         state.model_plan["mesh"] = {
             "target_size_m": target,
-            "element_type": model.mesh.element_type,
+            "element_type": element_type,
             "deviation_factor": 0.1,
             "min_size_factor": 0.1,
             "refine_at_supports": model.mesh.refine_at_supports,
@@ -25,4 +27,3 @@ class MeshAgent:
         }
         state.note("MeshAgent", f"Selected target mesh size {target:.3f} m with support breakpoints preserved.")
         return state
-

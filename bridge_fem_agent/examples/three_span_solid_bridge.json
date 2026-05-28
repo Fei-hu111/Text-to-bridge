@@ -1,0 +1,42 @@
+{
+  "project_name": "three_span_solid_bridge",
+  "bridge_type": "continuous_girder",
+  "analysis_type": "static",
+  "model_level": "solid",
+  "spans_m": [30.0, 40.0, 30.0],
+  "deck": {
+    "width_m": 8.0
+  },
+  "girder": {
+    "count": 1,
+    "height_m": 2.2,
+    "width_m": 8.0,
+    "section_type": "rectangular_solid"
+  },
+  "materials": {
+    "concrete": {
+      "elastic_modulus_pa": 34500000000.0,
+      "poisson_ratio": 0.2,
+      "density_kg_m3": 2500
+    }
+  },
+  "supports": [
+    {"name": "P0", "x_m": 0.0, "type": "pinned"},
+    {"name": "P1", "x_m": 30.0, "type": "roller"},
+    {"name": "P2", "x_m": 70.0, "type": "roller"},
+    {"name": "P3", "x_m": 100.0, "type": "roller"}
+  ],
+  "mesh": {
+    "target_size_m": 2.0,
+    "elements_per_span": 20,
+    "refine_at_supports": true,
+    "element_type": "C3D8R"
+  },
+  "loads": [
+    {"type": "gravity", "name": "Gravity"},
+    {"type": "uniform_deck_pressure", "name": "DeckPressure", "value_pa": 5000.0}
+  ],
+  "source_notes": [
+    "Solid model example: follows samples' BaseSolidExtrude + HomogeneousSolidSection + C3D8R style."
+  ]
+}

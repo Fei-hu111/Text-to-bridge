@@ -139,6 +139,56 @@ class WorkflowSmokeTest(unittest.TestCase):
             qa = json.loads((workdir / "qa_report.json").read_text(encoding="utf-8"))
             self.assertEqual(qa["status"], "pass")
 
+    def test_solid_model_production_generates_entity_analysis_script(self) -> None:
+        temp_root = ROOT / "runs" / "_test_tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as tmp:
+            tmp_path = Path(tmp)
+            task = {
+                "project_name": "three_span_solid_bridge",
+                "bridge_type": "continuous_girder",
+                "analysis_type": "static",
+                "model_level": "solid",
+                "spans_m": [30.0, 40.0, 30.0],
+                "deck": {"width_m": 8.0},
+                "girder": {"count": 1, "height_m": 2.2, "width_m": 8.0, "section_type": "rectangular_solid"},
+                "materials": {"concrete": {"elastic_modulus_pa": 3.45e10, "poisson_ratio": 0.2, "density_kg_m3": 2500}},
+                "supports": [
+                    {"name": "P0", "x_m": 0.0, "type": "pinned"},
+                    {"name": "P1", "x_m": 30.0, "type": "roller"},
+                    {"name": "P2", "x_m": 70.0, "type": "roller"},
+                    {"name": "P3", "x_m": 100.0, "type": "roller"},
+                ],
+                "mesh": {"target_size_m": 2.0, "element_type": "C3D8R"},
+                "loads": [
+                    {"type": "gravity", "name": "Gravity"},
+                    {"type": "uniform_deck_pressure", "name": "DeckPressure", "value_pa": 5000.0},
+                ],
+            }
+            input_path = tmp_path / "solid.json"
+            input_path.write_text(json.dumps(task), encoding="utf-8")
+            workdir = tmp_path / "solid_model"
+
+            code = main([
+                "--workflow",
+                "model-production",
+                "--input",
+                str(input_path),
+                "--workdir",
+                str(workdir),
+                "--samples-dir",
+                str(ROOT / "samples"),
+            ])
+
+            self.assertEqual(code, 0)
+            script_text = (workdir / "three_span_solid_bridge_build_model.py").read_text(encoding="utf-8")
+            self.assertIn("BaseSolidExtrude", script_text)
+            self.assertIn("HomogeneousSolidSection", script_text)
+            self.assertIn("C3D8R", script_text)
+            self.assertIn("model.Pressure", script_text)
+            plan = json.loads((workdir / "model_plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["idealization"]["selected_model_level"], "solid")
+
 
 if __name__ == "__main__":
     unittest.main()
