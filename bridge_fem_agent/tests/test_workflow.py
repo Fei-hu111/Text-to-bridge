@@ -189,6 +189,78 @@ class WorkflowSmokeTest(unittest.TestCase):
             plan = json.loads((workdir / "model_plan.json").read_text(encoding="utf-8"))
             self.assertEqual(plan["idealization"]["selected_model_level"], "solid")
 
+    def test_rigid_frame_v3_generates_optimized_review_model(self) -> None:
+        temp_root = ROOT / "runs" / "_test_tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as tmp:
+            workdir = Path(tmp) / "rigid_frame_v3"
+
+            code = main([
+                "--workflow",
+                "rigid-frame-v3",
+                "--spans",
+                "90",
+                "160",
+                "90",
+                "--pier-height",
+                "60",
+                "--workdir",
+                str(workdir),
+                "--max-design-iterations",
+                "8",
+                "--model-level",
+                "beam",
+            ])
+
+            self.assertEqual(code, 0)
+            final_design = json.loads((workdir / "final_design.json").read_text(encoding="utf-8"))
+            response = final_design["response"]
+            self.assertEqual(response["status"], "pass")
+            self.assertLessEqual(response["max_deflection_m"], response["deflection_limit_m"])
+            self.assertTrue((workdir / "optimization_history.json").exists())
+            self.assertTrue((workdir / "optimization_report.md").exists())
+            script_text = (workdir / "rigid_frame_90_160_90_rigid_frame_build.py").read_text(encoding="utf-8")
+            self.assertIn("RigidFrameBridge", script_text)
+            self.assertIn("model.BoxProfile", script_text)
+            self.assertIn("Tendon-Pier01-Top", script_text)
+            self.assertIn("Load-prestress-equivalent", script_text)
+            self.assertIn("B31", script_text)
+            self.assertIn("PierSection", script_text)
+
+    def test_rigid_frame_v3_generates_solid_review_model(self) -> None:
+        temp_root = ROOT / "runs" / "_test_tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as tmp:
+            workdir = Path(tmp) / "rigid_frame_v3_solid"
+
+            code = main([
+                "--workflow",
+                "rigid-frame-v3",
+                "--spans",
+                "90",
+                "160",
+                "90",
+                "--pier-height",
+                "60",
+                "--workdir",
+                str(workdir),
+                "--max-design-iterations",
+                "8",
+                "--model-level",
+                "solid",
+            ])
+
+            self.assertEqual(code, 0)
+            report = json.loads((workdir / "rigid_frame_v3_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["model_level"], "solid")
+            script_text = (workdir / "rigid_frame_90_160_90_rigid_frame_solid_build.py").read_text(encoding="utf-8")
+            self.assertIn("BaseSolidExtrude", script_text)
+            self.assertIn("RigidFrameSolid", script_text)
+            self.assertIn("C3D8R", script_text)
+            self.assertIn("model.EmbeddedRegion", script_text)
+            self.assertIn("Load-prestress-equivalent", script_text)
+            self.assertIn("PIER01_BASE", script_text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,19 +19,26 @@ from bridge_fem_agent.results.odb_extractor import OdbExtractor
 from bridge_fem_agent.results.report_writer import ReportWriter
 from bridge_fem_agent.runner.abaqus_runner import AbaqusRunner
 from bridge_fem_agent.runner.job_monitor import JobMonitor
+from bridge_fem_agent.rigid_frame.schema import RigidFrameInput
+from bridge_fem_agent.rigid_frame.workflow import RigidFrameV3Workflow
 from bridge_fem_agent.schemas.bridge_schema import BridgeTask
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bridge FEM Agent Workflow")
-    parser.add_argument("--input", required=True, type=Path, help="Bridge task JSON file.")
+    parser.add_argument("--input", type=Path, help="Bridge task JSON file.")
     parser.add_argument("--workdir", required=True, type=Path, help="Run directory for generated files.")
-    parser.add_argument("--workflow", choices=["analysis", "model-production"], default="analysis", help="Run V1 analysis workflow or V2 multi-agent model production.")
+    parser.add_argument("--workflow", choices=["analysis", "model-production", "rigid-frame-v3"], default="analysis", help="Run V1 analysis, V2 model production, or V3 rigid-frame design.")
     parser.add_argument("--max-repairs", type=int, default=WorkflowConfig.default_max_repairs)
     parser.add_argument("--dry-run", action="store_true", help="Run workflow without Abaqus installed.")
     parser.add_argument("--abaqus-command", default=WorkflowConfig().abaqus_command)
     parser.add_argument("--samples-dir", type=Path, default=Path("samples"), help="Local reference model directory for V2 agents.")
     parser.add_argument("--build-cae", action="store_true", help="For model-production, call Abaqus/CAE noGUI to generate .cae/.inp.")
+    parser.add_argument("--spans", nargs=3, type=float, metavar=("L1", "L2", "L3"), help="Three span lengths for rigid-frame-v3.")
+    parser.add_argument("--pier-height", type=float, help="Pier height for rigid-frame-v3.")
+    parser.add_argument("--deck-width", type=float, default=12.5, help="Deck width for rigid-frame-v3 when --spans is used.")
+    parser.add_argument("--max-design-iterations", type=int, default=8, help="Maximum V3 section/prestress design iterations.")
+    parser.add_argument("--model-level", choices=["solid", "beam"], default="solid", help="Model idealization for rigid-frame-v3.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
 
@@ -53,6 +60,8 @@ def run_workflow(args: argparse.Namespace) -> dict[str, object]:
     logger = logging.getLogger(__name__)
     logger.info("Loading bridge task from %s.", args.input)
 
+    if args.input is None:
+        raise ValueError("--input is required for analysis workflow.")
     task = BridgeTask.from_json(args.input)
     builder = InpBuilder(node_count=WorkflowConfig().generated_node_count)
     runner = AbaqusRunner(abaqus_command=args.abaqus_command, dry_run=args.dry_run)
@@ -147,9 +156,41 @@ def run_model_production_workflow(args: argparse.Namespace) -> dict[str, object]
     setup_logging(workdir, args.log_level)
     logger = logging.getLogger(__name__)
     logger.info("Starting V2 multi-agent model production from %s.", args.input)
+    if args.input is None:
+        raise ValueError("--input is required for model-production workflow.")
     workflow = ModelProductionWorkflow(abaqus_command=args.abaqus_command)
     report = workflow.run(args.input, workdir, samples_dir=args.samples_dir, build_cae=args.build_cae)
     logger.info("V2 model production finished with status '%s'.", report["status"])
+    return report
+
+
+def run_rigid_frame_v3_workflow(args: argparse.Namespace) -> dict[str, object]:
+    workdir = WorkflowConfig.ensure_workdir(args.workdir)
+    setup_logging(workdir, args.log_level)
+    logger = logging.getLogger(__name__)
+    if args.input:
+        task = RigidFrameInput.from_json(args.input)
+        if args.max_design_iterations:
+            data = task.to_dict()
+            data["targets"]["max_iterations"] = args.max_design_iterations
+            task = RigidFrameInput.from_dict(data)
+    elif args.spans:
+        task = RigidFrameInput.from_dict(
+            {
+                "project_name": f"rigid_frame_{int(args.spans[0])}_{int(args.spans[1])}_{int(args.spans[2])}",
+                "spans_m": args.spans,
+                "pier_height_m": args.pier_height,
+                "deck_width_m": args.deck_width,
+                "max_design_iterations": args.max_design_iterations,
+            }
+        )
+    else:
+        raise ValueError("rigid-frame-v3 requires either --input or --spans L1 L2 L3.")
+
+    logger.info("Starting V3 rigid-frame workflow for spans %s.", task.spans_m)
+    workflow = RigidFrameV3Workflow(abaqus_command=args.abaqus_command)
+    report = workflow.run(task, workdir, build_cae=args.build_cae, model_level=args.model_level)
+    logger.info("V3 rigid-frame workflow finished with status '%s'.", report["status"])
     return report
 
 
@@ -159,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.workflow == "model-production":
             report = run_model_production_workflow(args)
             return 0 if report["status"] == "pass" else 2
+        if args.workflow == "rigid-frame-v3":
+            report = run_rigid_frame_v3_workflow(args)
+            return 0 if report["status"] in {"pass", "needs_review"} else 2
         report = run_workflow(args)
         return 0 if report["status"] == "success" else 2
     finally:

@@ -1,0 +1,27 @@
+{
+  "project_name": "rigid_frame_90_160_90",
+  "bridge_type": "continuous_rigid_frame",
+  "spans_m": [90.0, 160.0, 90.0],
+  "pier_height_m": 60.0,
+  "deck_width_m": 12.5,
+  "roadway_load_pa": 5000.0,
+  "human_load_pa": 2500.0,
+  "second_dead_load_pa": 2500.0,
+  "materials": {
+    "girder_concrete": "C50",
+    "pier_concrete": "C40",
+    "prestress_steel": "1860MPa",
+    "concrete_density_kg_m3": 2500.0,
+    "girder_elastic_modulus_pa": 34500000000.0,
+    "pier_elastic_modulus_pa": 32500000000.0,
+    "concrete_poisson_ratio": 0.2,
+    "prestress_elastic_modulus_pa": 195000000000.0,
+    "tendon_jacking_stress_pa": 1395000000.0
+  },
+  "targets": {
+    "max_deflection_ratio": 600.0,
+    "max_compressive_stress_pa": 18000000.0,
+    "max_tensile_stress_pa": 1800000.0,
+    "max_iterations": 8
+  }
+}

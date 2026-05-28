@@ -2,10 +2,11 @@
 
 Text to Bridge is a Python + Abaqus workflow for automated bridge finite element model production, analysis execution, diagnosis, rule-based repair, result extraction, and reporting.
 
-The project currently contains two complementary workflows:
+The project currently contains three complementary workflows:
 
 - **V1 Analysis Workflow**: reads a structured bridge JSON file, generates an Abaqus `.inp`, runs Abaqus, diagnoses errors, applies deterministic repairs, extracts results, and writes reports.
 - **V2 Multi-Agent Model Production Workflow**: uses deterministic agents to transform a bridge semantic model into a reviewable Abaqus/CAE Python script, then optionally builds `.cae` and `.inp` files through Abaqus/CAE noGUI.
+- **V3 Rigid-Frame Design Workflow**: references local rigid-frame Abaqus samples and generates an optimized three-span continuous rigid-frame bridge with variable girder depth, monolithic solid girder-pier geometry, support definitions, and prestress tendon layout.
 
 The system is designed as a future LLM-agent toolchain, but the current implementation is intentionally deterministic and does not call external LLM APIs.
 
@@ -37,6 +38,16 @@ bridge_fem_agent/
   builders/
     abaqus_cae_builder.py
 
+  rigid_frame/
+    schema.py
+    design.py
+    builder.py
+    solid_builder.py
+    workflow.py
+
+  tools/
+    inspect_cae.py
+
   inp/
     inp_builder.py
     inp_parser.py
@@ -64,6 +75,7 @@ bridge_fem_agent/
     simple_girder_bridge.json
     three_span_agent_bridge.json
     three_span_solid_bridge.json
+    rigid_frame_v3_example.json
 
   tests/
     test_workflow.py
@@ -245,6 +257,116 @@ The following figures show the generated solid Abaqus model and its response fie
 
 ![V2 solid reaction force field](docs/images/v2_reaction.png)
 
+## V3: Continuous Rigid-Frame Bridge Design
+
+V3 targets three-span continuous rigid-frame bridges inspired by the local sample under `samples/rigid frame`. The workflow keeps the current release deterministic:
+
+```text
+Three span lengths / JSON task
+  -> rigid-frame semantic task
+  -> variable-depth section design
+  -> prestress tendon group design
+  -> rule-based response estimate and optimization
+  -> reviewable Abaqus/CAE Python script
+  -> optional .cae / .inp generation
+```
+
+Generate an optimized model from span lengths:
+
+```powershell
+python main.py --workflow rigid-frame-v3 --spans 90 160 90 --pier-height 60 --workdir runs\rigid_frame_v3_cli --max-design-iterations 8 --model-level solid
+```
+
+Generate from JSON:
+
+```powershell
+python main.py --workflow rigid-frame-v3 --input bridge_fem_agent\examples\rigid_frame_v3_example.json --workdir runs\rigid_frame_v3_json --model-level solid
+```
+
+Build `.cae/.inp` with Abaqus/CAE noGUI:
+
+```powershell
+python main.py --workflow rigid-frame-v3 --input bridge_fem_agent\examples\rigid_frame_v3_example.json --workdir runs\rigid_frame_v3_solid_cae --model-level solid --build-cae
+```
+
+V3 outputs:
+
+```text
+runs/rigid_frame_v3_solid_cae/
+  rigid_frame_semantic.json
+  optimization_history.json
+  final_design.json
+  optimization_report.md
+  rigid_frame_90_160_90_rigid_frame_solid_build.py
+  rigid_frame_90_160_90.cae
+  rigid_frame_90_160_90.inp
+  rigid_frame_v3_report.json
+  workflow.log
+```
+
+The generated Abaqus script currently uses:
+
+- C3D8R solid elements for the monolithic variable-depth girder and pier rigid frame
+- one extruded solid part for the main girder and both piers, so the pier-girder connection is continuous rather than tied after assembly
+- T3D2 truss wire paths embedded in the concrete host for reviewable prestress tendon groups
+- C50/C40 concrete and prestress steel material definitions
+- pinned/roller abutment supports and fixed pier bases
+- gravity, equivalent deck service load, and equivalent prestress balancing load
+- static Abaqus/Standard service analysis
+
+The previous B31 beam model remains available for fast global review:
+
+```powershell
+python main.py --workflow rigid-frame-v3 --spans 90 160 90 --pier-height 60 --workdir runs\rigid_frame_v3_beam --model-level beam
+```
+
+For the default `90 + 160 + 90 m` example, the deterministic optimizer reaches the configured serviceability targets within 8 design iterations. The final embedded-tendon solid `.inp` was solved with Abaqus/Standard in `runs/rigid_frame_v3_solid_embedded_cae`; the check ODB reported approximately:
+
+```text
+max_displacement = 0.2132945424954412
+```
+
+The extracted global `max_stress` in the embedded model includes both concrete and tendon elements, so concrete-only and tendon-only stress envelopes should be separated in future result extraction.
+
+### V3 Improvements
+
+The V3 release adds:
+
+- a three-span continuous rigid-frame bridge generator from JSON or direct span input;
+- deterministic section and prestress optimization before Abaqus model generation;
+- monolithic solid girder-pier geometry using C3D8R elements;
+- embedded T3D2 prestress tendon paths that deform consistently with the concrete host;
+- C50/C40-style material separation for girder and pier regions;
+- Abaqus/CAE noGUI generation of `.cae` and `.inp` files;
+- Abaqus/Standard verification for multiple span combinations;
+- Markdown/JSON reports for design history and validation.
+
+### V3 Solid Model Gallery
+
+Sample 1 uses the first V3 span set: `90 + 160 + 90 m`.
+
+![Sample 1 model](<docs/v3 images/sample 1 model.png>)
+
+![Sample 1 deformation](<docs/v3 images/sample 1 deform.png>)
+
+![Sample 1 stress](<docs/v3 images/sample 1 stress.png>)
+
+Sample 2 uses: `110 + 180 + 110 m`.
+
+![Sample 2 model](<docs/v3 images/sample 2 model.png>)
+
+![Sample 2 deformation](<docs/v3 images/sample 2 deform.png>)
+
+![Sample 2 stress](<docs/v3 images/sample 2 stress.png>)
+
+Sample 3 uses: `80 + 140 + 80 m`.
+
+![Sample 3 model](<docs/v3 images/sample 3 model.png>)
+
+![Sample 3 deformation](<docs/v3 images/sample 3 deform.png>)
+
+![Sample 3 stress](<docs/v3 images/sample 3 strss.png>)
+
 ## Testing
 
 Run the standard-library test suite:
@@ -259,6 +381,8 @@ Current coverage includes:
 - deterministic `.inp` repair without overwriting prior attempts
 - V2 beam model-production script generation
 - V2 solid model-production script generation
+- V3 rigid-frame variable-section and prestress optimization script generation
+- V3 solid rigid-frame script generation with embedded tendon constraints
 
 ## Design Principles
 
@@ -277,3 +401,5 @@ Current coverage includes:
 - Add vehicle, temperature, wind, seismic, and load-combination agents.
 - Improve ODB extraction for solid support reaction aggregation.
 - Add result reasonableness checks such as total reaction versus total applied load.
+- Upgrade V3 prestress from equivalent balancing load to calibrated initial stress/strain and staged construction.
+- Add element-set-based result extraction for concrete stress and tendon stress separately.
