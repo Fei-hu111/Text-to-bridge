@@ -1,0 +1,40 @@
+{
+  "project_name": "three_span_agent_bridge",
+  "bridge_type": "continuous_girder",
+  "analysis_type": "static",
+  "spans_m": [30.0, 40.0, 30.0],
+  "deck": {
+    "width_m": 12.0
+  },
+  "girder": {
+    "count": 1,
+    "height_m": 2.2,
+    "width_m": 8.0,
+    "section_type": "rectangular"
+  },
+  "materials": {
+    "concrete": {
+      "elastic_modulus_pa": 34500000000.0,
+      "poisson_ratio": 0.2,
+      "density_kg_m3": 2500
+    }
+  },
+  "supports": [
+    {"name": "P0", "x_m": 0.0, "type": "pinned"},
+    {"name": "P1", "x_m": 30.0, "type": "roller"},
+    {"name": "P2", "x_m": 70.0, "type": "roller"},
+    {"name": "P3", "x_m": 100.0, "type": "roller"}
+  ],
+  "mesh": {
+    "elements_per_span": 30,
+    "refine_at_supports": true,
+    "element_type": "B31"
+  },
+  "loads": [
+    {"type": "gravity", "name": "Gravity"},
+    {"type": "uniform_deck_pressure", "name": "DeckUniformLoad", "value_pa": 5000.0}
+  ],
+  "source_notes": [
+    "V2 example: multi-agent production of a reviewable Abaqus beam model."
+  ]
+}

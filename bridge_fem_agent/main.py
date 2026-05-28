@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from bridge_fem_agent.config import WorkflowConfig
+from bridge_fem_agent.agents.model_production_workflow import ModelProductionWorkflow
 from bridge_fem_agent.diagnosis.error_classifier import ErrorClassifier
 from bridge_fem_agent.diagnosis.log_parser import LogParser
 from bridge_fem_agent.inp.inp_builder import InpBuilder
@@ -25,9 +26,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bridge FEM Agent Workflow")
     parser.add_argument("--input", required=True, type=Path, help="Bridge task JSON file.")
     parser.add_argument("--workdir", required=True, type=Path, help="Run directory for generated files.")
+    parser.add_argument("--workflow", choices=["analysis", "model-production"], default="analysis", help="Run V1 analysis workflow or V2 multi-agent model production.")
     parser.add_argument("--max-repairs", type=int, default=WorkflowConfig.default_max_repairs)
     parser.add_argument("--dry-run", action="store_true", help="Run workflow without Abaqus installed.")
     parser.add_argument("--abaqus-command", default=WorkflowConfig().abaqus_command)
+    parser.add_argument("--samples-dir", type=Path, default=Path("samples"), help="Local reference model directory for V2 agents.")
+    parser.add_argument("--build-cae", action="store_true", help="For model-production, call Abaqus/CAE noGUI to generate .cae/.inp.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
 
@@ -138,9 +142,23 @@ def run_workflow(args: argparse.Namespace) -> dict[str, object]:
     return report
 
 
+def run_model_production_workflow(args: argparse.Namespace) -> dict[str, object]:
+    workdir = WorkflowConfig.ensure_workdir(args.workdir)
+    setup_logging(workdir, args.log_level)
+    logger = logging.getLogger(__name__)
+    logger.info("Starting V2 multi-agent model production from %s.", args.input)
+    workflow = ModelProductionWorkflow(abaqus_command=args.abaqus_command)
+    report = workflow.run(args.input, workdir, samples_dir=args.samples_dir, build_cae=args.build_cae)
+    logger.info("V2 model production finished with status '%s'.", report["status"])
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
+        if args.workflow == "model-production":
+            report = run_model_production_workflow(args)
+            return 0 if report["status"] == "pass" else 2
         report = run_workflow(args)
         return 0 if report["status"] == "success" else 2
     finally:

@@ -2,3 +2,12 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 runs/
+samples/
+*.cae
+*.odb
+*.sim
+*.prt
+*.com
+*.dat
+*.msg
+*.sta
