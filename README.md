@@ -2,11 +2,12 @@
 
 Text to Bridge is a Python + Abaqus workflow for automated bridge finite element model production, analysis execution, diagnosis, rule-based repair, result extraction, and reporting.
 
-The project currently contains three complementary workflows:
+The project currently contains four complementary workflows:
 
 - **V1 Analysis Workflow**: reads a structured bridge JSON file, generates an Abaqus `.inp`, runs Abaqus, diagnoses errors, applies deterministic repairs, extracts results, and writes reports.
 - **V2 Multi-Agent Model Production Workflow**: uses deterministic agents to transform a bridge semantic model into a reviewable Abaqus/CAE Python script, then optionally builds `.cae` and `.inp` files through Abaqus/CAE noGUI.
 - **V3 Rigid-Frame Design Workflow**: references local rigid-frame Abaqus samples and generates an optimized three-span continuous rigid-frame bridge with variable girder depth, monolithic solid girder-pier geometry, support definitions, and prestress tendon layout.
+- **V4 Hollow-Box Rigid-Frame Workflow**: upgrades the rigid-frame solid model to a hollow box-girder representation with C3D8R top slab, webs, bottom slab, embedded tendon paths, and rule-based section/prestress control.
 
 The system is designed as a future LLM-agent toolchain, but the current implementation is intentionally deterministic and does not call external LLM APIs.
 
@@ -43,6 +44,7 @@ bridge_fem_agent/
     design.py
     builder.py
     solid_builder.py
+    hollow_box_builder.py
     workflow.py
 
   tools/
@@ -367,6 +369,72 @@ Sample 3 uses: `80 + 140 + 80 m`.
 
 ![Sample 3 stress](<docs/v3 images/sample 3 strss.png>)
 
+## V4: Hollow-Box Continuous Rigid-Frame Bridge
+
+V4 keeps the V3 deterministic design loop but changes the default rigid-frame idealization to a hollow box-girder solid model. It is closer to the local rigid-frame sample because the girder is no longer a filled solid block.
+
+Generate V4 review assets:
+
+```powershell
+python main.py --workflow rigid-frame-v4 --spans 90 160 90 --pier-height 60 --workdir runs\rigid_frame_v4_hollow_review_90_160_90 --max-design-iterations 8
+```
+
+Build `.cae/.inp` with Abaqus/CAE noGUI when the Abaqus license service is available:
+
+```powershell
+python main.py --workflow rigid-frame-v4 --spans 90 160 90 --pier-height 60 --workdir runs\rigid_frame_v4_hollow_90_160_90 --max-design-iterations 8 --build-cae
+```
+
+The V4 generated Abaqus script uses:
+
+- C3D8R solid elements for top slab, bottom slab, webs, and piers;
+- a true central void in the box girder;
+- shared-node concrete host geometry for girder and piers;
+- T3D2 prestress tendon paths embedded into the concrete host;
+- C50/C40 concrete and prestress steel materials;
+- left abutment, right abutment, and pier-base support sets;
+- gravity, equivalent deck service load, and equivalent prestress balancing load;
+- static Abaqus/Standard service analysis output requests.
+
+The default `90 + 160 + 90 m` V4 example was generated through Abaqus/CAE and solved with Abaqus/Standard in:
+
+```text
+runs/rigid_frame_v4_hollow_cae_retry3_90_160_90
+```
+
+The service analysis completed successfully. Basic ODB extraction reported:
+
+```text
+max_displacement = 0.2560715425483322
+max_stress = 110774688.0
+```
+
+The current stress maximum is global and may include prestress tendon elements; concrete-only and tendon-only stress envelopes are planned for the next result extraction upgrade.
+
+### V4 Hollow-Box Model Gallery
+
+![V4 hollow-box model](<docs/v4 images/v4 model.png>)
+
+![V4 hollow-box deformation](<docs/v4 images/v4 deform.png>)
+
+![V4 hollow-box stress field](<docs/v4 images/v4 stress.png>)
+
+V4 outputs are written under the selected work directory:
+
+```text
+runs/rigid_frame_v4_hollow_review_90_160_90/
+  rigid_frame_semantic.json
+  optimization_history.json
+  final_design.json
+  optimization_report.md
+  rigid_frame_90_160_90_rigid_frame_hollow_box_build.py
+  rigid_frame_v4_report.json
+  rigid_frame_v3_report.json
+  workflow.log
+```
+
+Detailed V4 design notes are available in [docs/V4_hollow_box_rigid_frame_design.md](docs/V4_hollow_box_rigid_frame_design.md).
+
 ## Testing
 
 Run the standard-library test suite:
@@ -383,6 +451,7 @@ Current coverage includes:
 - V2 solid model-production script generation
 - V3 rigid-frame variable-section and prestress optimization script generation
 - V3 solid rigid-frame script generation with embedded tendon constraints
+- V4 hollow-box rigid-frame script generation with C3D8R concrete blocks and embedded T3D2 tendon paths
 
 ## Design Principles
 
@@ -401,5 +470,6 @@ Current coverage includes:
 - Add vehicle, temperature, wind, seismic, and load-combination agents.
 - Improve ODB extraction for solid support reaction aggregation.
 - Add result reasonableness checks such as total reaction versus total applied load.
-- Upgrade V3 prestress from equivalent balancing load to calibrated initial stress/strain and staged construction.
+- Upgrade V3/V4 prestress from equivalent balancing load to calibrated initial stress/strain and staged construction.
+- Add drawing-driven hollow-box section extraction for V4.
 - Add element-set-based result extraction for concrete stress and tendon stress separately.

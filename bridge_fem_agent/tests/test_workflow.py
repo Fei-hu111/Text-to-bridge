@@ -261,6 +261,39 @@ class WorkflowSmokeTest(unittest.TestCase):
             self.assertIn("Load-prestress-equivalent", script_text)
             self.assertIn("PIER01_BASE", script_text)
 
+    def test_rigid_frame_v4_generates_hollow_box_solid_script(self) -> None:
+        temp_root = ROOT / "runs" / "_test_tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as tmp:
+            workdir = Path(tmp) / "rigid_frame_v4_hollow"
+
+            code = main([
+                "--workflow",
+                "rigid-frame-v4",
+                "--spans",
+                "90",
+                "160",
+                "90",
+                "--pier-height",
+                "60",
+                "--workdir",
+                str(workdir),
+                "--max-design-iterations",
+                "8",
+            ])
+
+            self.assertEqual(code, 0)
+            report = json.loads((workdir / "rigid_frame_v4_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["model_level"], "hollow-solid")
+            self.assertTrue((workdir / "rigid_frame_v3_report.json").exists())
+            script_text = (workdir / "rigid_frame_90_160_90_rigid_frame_hollow_box_build.py").read_text(encoding="utf-8")
+            self.assertIn("HollowBoxRigidFrame", script_text)
+            self.assertIn("GIRDER_CONCRETE_ELEMENTS", script_text)
+            self.assertIn("PIER_CONCRETE_ELEMENTS", script_text)
+            self.assertIn("C3D8R", script_text)
+            self.assertIn("T3D2", script_text)
+            self.assertIn("model.EmbeddedRegion", script_text)
+
 
 if __name__ == "__main__":
     unittest.main()
