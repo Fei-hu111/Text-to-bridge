@@ -294,6 +294,41 @@ class WorkflowSmokeTest(unittest.TestCase):
             self.assertIn("T3D2", script_text)
             self.assertIn("model.EmbeddedRegion", script_text)
 
+    def test_rigid_frame_v5_generates_construction_solid_script(self) -> None:
+        temp_root = ROOT / "runs" / "_test_tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as tmp:
+            workdir = Path(tmp) / "rigid_frame_v5_construction"
+
+            code = main([
+                "--workflow",
+                "rigid-frame-v5",
+                "--spans",
+                "90",
+                "160",
+                "90",
+                "--pier-height",
+                "60",
+                "--workdir",
+                str(workdir),
+                "--max-design-iterations",
+                "8",
+            ])
+
+            self.assertEqual(code, 0)
+            report = json.loads((workdir / "rigid_frame_v5_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["model_level"], "construction-solid")
+            script_text = (workdir / "rigid_frame_90_160_90_rigid_frame_construction_solid_build.py").read_text(encoding="utf-8")
+            self.assertIn("ConstructionSolidRigidFrame", script_text)
+            self.assertIn("SOLID_DIAPHRAGM_ELEMENTS", script_text)
+            self.assertIn("left_end_solid", script_text)
+            self.assertIn("pier01_solid", script_text)
+            self.assertIn("bottom_slab_thickness_m", script_text)
+            self.assertIn("mesh_controls", script_text)
+            self.assertIn("axis_points", script_text)
+            self.assertIn("C3D8R", script_text)
+            self.assertIn("model.EmbeddedRegion", script_text)
+
 
 if __name__ == "__main__":
     unittest.main()

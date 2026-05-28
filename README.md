@@ -2,12 +2,13 @@
 
 Text to Bridge is a Python + Abaqus workflow for automated bridge finite element model production, analysis execution, diagnosis, rule-based repair, result extraction, and reporting.
 
-The project currently contains four complementary workflows:
+The project currently contains five complementary workflows:
 
 - **V1 Analysis Workflow**: reads a structured bridge JSON file, generates an Abaqus `.inp`, runs Abaqus, diagnoses errors, applies deterministic repairs, extracts results, and writes reports.
 - **V2 Multi-Agent Model Production Workflow**: uses deterministic agents to transform a bridge semantic model into a reviewable Abaqus/CAE Python script, then optionally builds `.cae` and `.inp` files through Abaqus/CAE noGUI.
 - **V3 Rigid-Frame Design Workflow**: references local rigid-frame Abaqus samples and generates an optimized three-span continuous rigid-frame bridge with variable girder depth, monolithic solid girder-pier geometry, support definitions, and prestress tendon layout.
 - **V4 Hollow-Box Rigid-Frame Workflow**: upgrades the rigid-frame solid model to a hollow box-girder representation with C3D8R top slab, webs, bottom slab, embedded tendon paths, and rule-based section/prestress control.
+- **V5 Construction-Solid Rigid-Frame Workflow**: adds construction-style solid regions, including end solid blocks, pier-top solid diaphragm zones, and variable bottom slab thickness near supports.
 
 The system is designed as a future LLM-agent toolchain, but the current implementation is intentionally deterministic and does not call external LLM APIs.
 
@@ -45,6 +46,7 @@ bridge_fem_agent/
     builder.py
     solid_builder.py
     hollow_box_builder.py
+    construction_solid_builder.py
     workflow.py
 
   tools/
@@ -435,6 +437,52 @@ runs/rigid_frame_v4_hollow_review_90_160_90/
 
 Detailed V4 design notes are available in [docs/V4_hollow_box_rigid_frame_design.md](docs/V4_hollow_box_rigid_frame_design.md).
 
+## V5: Construction-Solid Continuous Rigid-Frame Bridge
+
+V5 addresses the main modelling gaps left in V4. The girder is still a hollow box in standard span regions, but support-sensitive zones are now generated as real C3D8R solid regions.
+
+Generate and build a V5 model:
+
+```powershell
+python main.py --workflow rigid-frame-v5 --spans 90 160 90 --pier-height 60 --workdir runs\rigid_frame_v5_refined_mesh_cae_90_160_90 --max-design-iterations 8 --build-cae
+```
+
+The V5 generated Abaqus script uses:
+
+- C3D8R continuum solid elements;
+- hollow box-girder regions away from supports;
+- solid end blocks at both girder ends by filling only the internal box-cell void;
+- solid pier-top diaphragm/support zones by filling only the internal box-cell void;
+- smooth solid-to-hollow transitions without external protruding support blocks;
+- variable bottom slab thickness using a smooth transition rule, thin away from piers and thick near pier/support zones;
+- reviewable element set `SOLID_DIAPHRAGM_ELEMENTS`;
+- refined C3D8R mesh in the longitudinal, vertical, and transverse directions;
+- embedded T3D2 prestress tendon paths placed inside the local concrete section;
+- gravity, equivalent service deck load, and equivalent prestress balancing load.
+
+The default `90 + 160 + 90 m` V5 example was generated through Abaqus/CAE and solved with Abaqus/Standard in:
+
+```text
+runs/rigid_frame_v5_refined_mesh_cae_90_160_90
+```
+
+The service analysis completed successfully. Basic ODB extraction reported:
+
+```text
+max_displacement = 0.2537494025965285
+max_stress = 76677904.0
+```
+
+### V5 Refined Mesh Model Gallery
+
+![V5 refined mesh model](<docs/v5 iamges/v5 model.png>)
+
+![V5 displacement field](<docs/v5 iamges/v5 deform.png>)
+
+![V5 stress field](<docs/v5 iamges/v5 stress.png>)
+
+Detailed V5 design notes are available in [docs/V5_construction_solid_rigid_frame_design.md](docs/V5_construction_solid_rigid_frame_design.md).
+
 ## Testing
 
 Run the standard-library test suite:
@@ -452,6 +500,7 @@ Current coverage includes:
 - V3 rigid-frame variable-section and prestress optimization script generation
 - V3 solid rigid-frame script generation with embedded tendon constraints
 - V4 hollow-box rigid-frame script generation with C3D8R concrete blocks and embedded T3D2 tendon paths
+- V5 construction-solid script generation with solid end blocks, pier diaphragm zones, and variable bottom slab thickness
 
 ## Design Principles
 
@@ -471,5 +520,5 @@ Current coverage includes:
 - Improve ODB extraction for solid support reaction aggregation.
 - Add result reasonableness checks such as total reaction versus total applied load.
 - Upgrade V3/V4 prestress from equivalent balancing load to calibrated initial stress/strain and staged construction.
-- Add drawing-driven hollow-box section extraction for V4.
+- Add drawing-driven hollow-box and diaphragm section extraction for V4/V5.
 - Add element-set-based result extraction for concrete stress and tendon stress separately.

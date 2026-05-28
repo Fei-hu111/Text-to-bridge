@@ -28,7 +28,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bridge FEM Agent Workflow")
     parser.add_argument("--input", type=Path, help="Bridge task JSON file.")
     parser.add_argument("--workdir", required=True, type=Path, help="Run directory for generated files.")
-    parser.add_argument("--workflow", choices=["analysis", "model-production", "rigid-frame-v3", "rigid-frame-v4"], default="analysis", help="Run V1 analysis, V2 model production, V3 rigid-frame design, or V4 hollow-box rigid-frame design.")
+    parser.add_argument("--workflow", choices=["analysis", "model-production", "rigid-frame-v3", "rigid-frame-v4", "rigid-frame-v5"], default="analysis", help="Run V1 analysis, V2 model production, V3 rigid-frame design, V4 hollow-box design, or V5 construction-solid design.")
     parser.add_argument("--max-repairs", type=int, default=WorkflowConfig.default_max_repairs)
     parser.add_argument("--dry-run", action="store_true", help="Run workflow without Abaqus installed.")
     parser.add_argument("--abaqus-command", default=WorkflowConfig().abaqus_command)
@@ -38,7 +38,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pier-height", type=float, help="Pier height for rigid-frame-v3.")
     parser.add_argument("--deck-width", type=float, default=12.5, help="Deck width for rigid-frame-v3 when --spans is used.")
     parser.add_argument("--max-design-iterations", type=int, default=8, help="Maximum V3 section/prestress design iterations.")
-    parser.add_argument("--model-level", choices=["hollow-solid", "solid", "beam"], default="hollow-solid", help="Model idealization for rigid-frame-v3/v4.")
+    parser.add_argument("--model-level", choices=["construction-solid", "hollow-solid", "solid", "beam"], default="hollow-solid", help="Model idealization for rigid-frame-v3/v4/v5.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
 
@@ -168,6 +168,8 @@ def run_rigid_frame_v3_workflow(args: argparse.Namespace) -> dict[str, object]:
     workdir = WorkflowConfig.ensure_workdir(args.workdir)
     setup_logging(workdir, args.log_level)
     logger = logging.getLogger(__name__)
+    if args.workflow == "rigid-frame-v5" and args.model_level in {"solid", "hollow-solid"}:
+        args.model_level = "construction-solid"
     if args.workflow == "rigid-frame-v4" and args.model_level == "solid":
         args.model_level = "hollow-solid"
     if args.input:
@@ -187,9 +189,9 @@ def run_rigid_frame_v3_workflow(args: argparse.Namespace) -> dict[str, object]:
             }
         )
     else:
-        raise ValueError("rigid-frame-v3 requires either --input or --spans L1 L2 L3.")
+        raise ValueError("rigid-frame workflow requires either --input or --spans L1 L2 L3.")
 
-    version = "V4" if args.workflow == "rigid-frame-v4" else "V3"
+    version = {"rigid-frame-v5": "V5", "rigid-frame-v4": "V4"}.get(args.workflow, "V3")
     logger.info("Starting %s rigid-frame workflow for spans %s.", version, task.spans_m)
     workflow = RigidFrameV3Workflow(abaqus_command=args.abaqus_command)
     report = workflow.run(task, workdir, build_cae=args.build_cae, model_level=args.model_level)
@@ -203,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.workflow == "model-production":
             report = run_model_production_workflow(args)
             return 0 if report["status"] == "pass" else 2
-        if args.workflow in {"rigid-frame-v3", "rigid-frame-v4"}:
+        if args.workflow in {"rigid-frame-v3", "rigid-frame-v4", "rigid-frame-v5"}:
             report = run_rigid_frame_v3_workflow(args)
             return 0 if report["status"] in {"pass", "needs_review"} else 2
         report = run_workflow(args)

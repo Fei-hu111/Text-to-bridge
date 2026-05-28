@@ -14,6 +14,7 @@ from typing import Any
 
 from bridge_fem_agent.config import WorkflowConfig
 from bridge_fem_agent.rigid_frame.builder import RigidFrameAbaqusBuilder
+from bridge_fem_agent.rigid_frame.construction_solid_builder import ConstructionSolidRigidFrameBuilder
 from bridge_fem_agent.rigid_frame.design import RigidFrameDesignFactory, RigidFrameOptimizer
 from bridge_fem_agent.rigid_frame.hollow_box_builder import HollowBoxRigidFrameBuilder
 from bridge_fem_agent.rigid_frame.schema import RigidFrameInput
@@ -32,6 +33,7 @@ class RigidFrameV3Workflow:
         self.builder = RigidFrameAbaqusBuilder()
         self.solid_builder = RigidFrameSolidAbaqusBuilder()
         self.hollow_box_builder = HollowBoxRigidFrameBuilder()
+        self.construction_solid_builder = ConstructionSolidRigidFrameBuilder()
 
     def run(self, task: RigidFrameInput, workdir: Path, build_cae: bool = False, model_level: str = "solid") -> dict[str, Any]:
         workdir = WorkflowConfig.ensure_workdir(workdir)
@@ -49,6 +51,8 @@ class RigidFrameV3Workflow:
 
         if model_level == "beam":
             script_path = self.builder.write(task, final_design, workdir)
+        elif model_level == "construction-solid":
+            script_path = self.construction_solid_builder.write(task, final_design, workdir)
         elif model_level == "hollow-solid":
             script_path = self.hollow_box_builder.write(task, final_design, workdir)
         else:
@@ -63,7 +67,12 @@ class RigidFrameV3Workflow:
         if cae_result and cae_result["status"] != "success":
             status = "failed"
 
-        report_filename = "rigid_frame_v4_report.json" if model_level == "hollow-solid" else "rigid_frame_v3_report.json"
+        if model_level == "construction-solid":
+            report_filename = "rigid_frame_v5_report.json"
+        elif model_level == "hollow-solid":
+            report_filename = "rigid_frame_v4_report.json"
+        else:
+            report_filename = "rigid_frame_v3_report.json"
         report = {
             "status": status,
             "model_level": model_level,
@@ -114,7 +123,7 @@ class RigidFrameV3Workflow:
 
     def _expected_model_file(self, script_path: Path, workdir: Path, suffix: str) -> Path:
         stem = script_path.name
-        for marker in ("_rigid_frame_hollow_box_build.py", "_rigid_frame_solid_build.py", "_rigid_frame_build.py"):
+        for marker in ("_rigid_frame_construction_solid_build.py", "_rigid_frame_hollow_box_build.py", "_rigid_frame_solid_build.py", "_rigid_frame_build.py"):
             if stem.endswith(marker):
                 return workdir / stem.replace(marker, suffix)
         return workdir / f"{script_path.stem}{suffix}"
@@ -128,7 +137,12 @@ class RigidFrameV3Workflow:
     def _markdown_report(self, task: RigidFrameInput, history: list[Any], script_path: Path, model_level: str) -> str:
         final = history[-1]
         response = final.response
-        version = "V4 Hollow-Box" if model_level == "hollow-solid" else "V3"
+        if model_level == "construction-solid":
+            version = "V5 Construction-Solid"
+        elif model_level == "hollow-solid":
+            version = "V4 Hollow-Box"
+        else:
+            version = "V3"
         lines = [
             f"# {version} Rigid-Frame Design Report: {task.project_name}",
             "",
