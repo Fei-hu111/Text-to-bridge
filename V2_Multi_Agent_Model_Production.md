@@ -1,135 +1,214 @@
 # V2 Multi-Agent Abaqus Model Production
 
-本版本在 V1 的 Abaqus 求解、诊断、修复链路之外，新增“多 Agent 协作生成可审查 Abaqus 模型”的工作流。
+This document describes the second-stage workflow in Text to Bridge: deterministic multi-agent production of reviewable Abaqus bridge finite element models.
 
-## 核心思路
+## Goal
 
-V2 不让图纸或文本直接生成 Abaqus 文件，而是经过一个可审计的中间层：
+V2 extends the V1 `.inp` analysis workflow into a more general model-production workflow. The goal is to support bridge model creation from structured design information, and later from drawings and text.
+
+The workflow does not directly convert drawings into Abaqus files. Instead, it uses an auditable intermediate representation:
 
 ```text
-图纸/文本/结构化 JSON
+drawings / text / structured JSON
   -> Bridge Semantic Model
-  -> 多 Agent 模型计划
-  -> Abaqus/CAE Python build script
+  -> Multi-agent Model Plan
+  -> Abaqus/CAE Python Script
   -> .cae / .inp
-  -> 可选 Abaqus/Standard 验证
+  -> Optional Abaqus/Standard Verification
 ```
 
-当前版本先支持结构化 JSON 输入，并读取本地 `samples/**/*.jnl` 参考模型，提取建模风格统计。V2 已支持 `beam` 与 `solid` 两条生成路径；后续可以把 PDF/CAD/OCR 解析接到同一个 semantic model。
+This separation is important because drawing recognition may be uncertain, while Abaqus model generation must be deterministic and reviewable.
 
-## Agent 分工
+## Agent Responsibilities
 
-- `DocumentAgent`: 读取 JSON，生成桥梁语义模型。
-- `ReferenceAgent`: 扫描 `samples` 中的 Abaqus journal，识别 wire beam、solid extrude、connector、mesh、load 等参考模式。
-- `GeometryAgent`: 生成桥梁纵向坐标、跨径站点、支座断点和主梁 wire 轴线。
-- `IdealizationAgent`: 选择有限元理想化方式。当前默认生成 B31 beam 全桥模型。
-- `MaterialAgent`: 准备材料和截面定义。
-- `MeshAgent`: 计算目标网格尺寸，保留支座与跨径断点。
-- `BoundaryAgent`: 将 pinned、roller、fixed 等工程支座语义转换为 Abaqus DOF 约束。
-- `LoadAgent`: 将自重、桥面均布面荷载转换为 Abaqus gravity 和 beam line load。
-- `QaAgent`: 在生成 Abaqus 模型前检查支座、材料、荷载、网格等关键项。
-- `AbaqusCaeScriptBuilder`: 输出可审查的 Abaqus/CAE Python 脚本，并可调用 Abaqus 生成 `.cae/.inp`。
+### DocumentAgent
 
-## 示例命令
+Reads the input JSON file and creates a `BridgeSemanticModel`.
 
-只生成可审查模型资产，不调用 Abaqus/CAE：
+Future versions can add PDF, CAD, OCR, or drawing-table extraction before this stage.
 
-```powershell
-python main.py --workflow model-production --input bridge_fem_agent\examples\three_span_agent_bridge.json --workdir runs\three_span_agent_bridge_v2 --samples-dir samples
+### ReferenceAgent
+
+Scans local reference journals under:
+
+```text
+samples/**/*.jnl
 ```
 
-生成资产并调用 Abaqus/CAE noGUI 生成 `.cae/.inp`：
+It counts patterns such as:
+
+- `BaseWire`
+- `BeamSection`
+- `BaseSolidExtrude`
+- `HomogeneousSolidSection`
+- `ConnectorSection`
+- `seedPart`
+- `seedEdgeByNumber`
+- `generateMesh`
+- `Gravity`
+- `Pressure`
+- `StaticStep`
+
+The agent does not copy the sample models. It uses them as local modelling-style references.
+
+### GeometryAgent
+
+Creates longitudinal bridge stations, span breakpoints, support stations, and modelling coordinates.
+
+The current coordinate convention is:
+
+```text
+X = bridge longitudinal direction
+Y = bridge transverse direction
+Z = vertical direction
+```
+
+### IdealizationAgent
+
+Selects the finite element idealization.
+
+Current supported values:
+
+- `beam`
+- `solid`
+
+Beam models use B31 elements. Solid models use C3D8R elements by default.
+
+### MaterialAgent
+
+Prepares material definitions and section data.
+
+For the current examples, concrete is defined with:
+
+- density
+- elastic modulus
+- Poisson's ratio
+
+### MeshAgent
+
+Selects element type and target mesh size.
+
+For beam models, the mesh is applied along the bridge axis. For solid models, `seedPart` and `generateMesh` are used in the Abaqus/CAE script.
+
+### BoundaryAgent
+
+Maps engineering support names to Abaqus boundary conditions.
+
+Current support types:
+
+- `fixed`
+- `pinned`
+- `roller`
+- `roller_x`
+- `roller_y`
+- `vertical`
+
+For solid models, support constraints are applied to bottom support node sets.
+
+### LoadAgent
+
+Maps load semantics into Abaqus load definitions.
+
+Current load types:
+
+- gravity
+- uniform deck pressure
+- concentrated force
+
+For beam models, deck pressure is converted into a beam line load. For solid models, the workflow first tries to create a top surface pressure. If Abaqus/CAE cannot create a stable surface after solid partitioning, it falls back to an equivalent top-node vertical force distribution.
+
+### QaAgent
+
+Performs pre-generation QA checks:
+
+- bridge length is positive
+- supports exist
+- end supports are present
+- materials exist
+- loads exist
+- mesh size is valid
+
+The QA output is written to:
+
+```text
+qa_report.json
+qa_report.md
+```
+
+### AbaqusCaeScriptBuilder
+
+Creates a reviewable Abaqus/CAE Python build script:
+
+```text
+<project_name>_build_model.py
+```
+
+When `--build-cae` is used, the workflow calls:
+
+```text
+abaqus cae noGUI=<project_name>_build_model.py
+```
+
+The generated files include:
+
+```text
+<project_name>.cae
+<project_name>.inp
+```
+
+## Beam Model Workflow
+
+Command:
 
 ```powershell
 python main.py --workflow model-production --input bridge_fem_agent\examples\three_span_agent_bridge.json --workdir runs\three_span_agent_bridge_v2_cae --samples-dir samples --build-cae
 ```
 
-## 主要输出
+Beam model features:
 
-```text
-runs/three_span_agent_bridge_v2_cae/
-  model_plan.json
-  qa_report.json
-  qa_report.md
-  model_production_report.json
-  three_span_agent_bridge_build_model.py
-  three_span_agent_bridge.cae
-  three_span_agent_bridge.inp
-```
+- Abaqus `BaseWire`
+- B31 beam elements
+- rectangular beam section
+- support sets at bridge stations
+- gravity load
+- line load from deck pressure
+- static analysis step
 
-其中：
-
-- `model_plan.json`: 多 Agent 协作后的完整建模计划。
-- `qa_report.md`: 生成前 QA/QC 审查报告。
-- `three_span_agent_bridge_build_model.py`: 可人工审查的 Abaqus/CAE Python 脚本。
-- `three_span_agent_bridge.cae`: Abaqus/CAE 模型数据库。
-- `three_span_agent_bridge.inp`: Abaqus 输入文件。
-
-## 本机验证记录
-
-已用本地 `samples` 目录作为参考，生成三跨连续梁示例：
-
-```text
-E:\Desktop\Text to bridge\runs\three_span_agent_bridge_v2_cae_retry2
-```
-
-Abaqus/CAE noGUI 成功生成：
-
-```text
-three_span_agent_bridge.cae
-three_span_agent_bridge.inp
-```
-
-随后直接提交生成的 `.inp` 给 Abaqus/Standard：
-
-```powershell
-abaqus job=three_span_agent_bridge_check input=three_span_agent_bridge.inp interactive
-```
-
-状态文件显示：
+Verified Abaqus/Standard status:
 
 ```text
 THE ANALYSIS HAS COMPLETED SUCCESSFULLY
 ```
 
-## 实体分析路径
+## Solid Model Workflow
 
-当输入 JSON 设置：
-
-```json
-{
-  "model_level": "solid",
-  "mesh": {
-    "element_type": "C3D8R"
-  }
-}
-```
-
-系统会参考 `samples` 中的实体建模模式，生成：
-
-- `BaseSolidExtrude` 矩形实体主梁
-- `HomogeneousSolidSection` 实体截面
-- `C3D8R` 为主的实体单元
-- `seedPart + generateMesh` 网格流程
-- 支座断面分割
-- 底面支座节点集
-- 顶面 `Pressure`
-- 自重 `Gravity`
-- Abaqus/Standard 静力分析 step
-
-实体示例：
+Command:
 
 ```powershell
 python main.py --workflow model-production --input bridge_fem_agent\examples\three_span_solid_bridge.json --workdir runs\three_span_solid_bridge_v2_cae --samples-dir samples --build-cae
 ```
 
-本机实体模型验证目录：
+Solid model features:
+
+- Abaqus `BaseSolidExtrude`
+- rectangular solid girder
+- partitioning at support stations
+- `HomogeneousSolidSection`
+- C3D8R solid elements
+- `seedPart`
+- `generateMesh`
+- bottom support node sets
+- gravity load
+- deck pressure or equivalent top-node load fallback
+- static analysis step
+
+Verified local solid model directory:
 
 ```text
 E:\Desktop\Text to bridge\runs\three_span_solid_bridge_v2_cae_retry2
 ```
 
-已生成：
+Generated files:
 
 ```text
 three_span_solid_bridge.cae
@@ -138,24 +217,35 @@ three_span_solid_bridge_check.odb
 three_span_solid_bridge_check_odb_results.json
 ```
 
-实体模型的 Abaqus/Standard 状态：
+Verified Abaqus/Standard status:
 
 ```text
 THE ANALYSIS HAS COMPLETED SUCCESSFULLY
 ```
 
-当前实体分析结果提取：
+Extracted ODB summary:
 
 ```text
 max_displacement = 1.3075553125059352
 max_stress = 1051906.5
 ```
 
-说明：实体路径中顶面 `Pressure` 会优先尝试创建 Abaqus surface；若 Abaqus/CAE 对分割实体的 surface side 创建失败，脚本会自动回退为顶面节点集等效竖向集中力，保证模型可生成和可求解。
+## Current Limitations
 
-## 当前边界
+- Drawing/PDF/CAD recognition is not implemented yet.
+- The solid model is currently a simplified rectangular solid girder.
+- The pressure load may fall back to equivalent nodal force if Abaqus/CAE surface creation fails.
+- Solid support reaction extraction needs a dedicated node-set aggregation improvement.
+- Connector bearings and detailed track-slab modelling are future work.
 
-- 当前 V2 可生成全桥 B31 beam 模型，也可生成简化矩形实体 C3D8R 模型。
-- samples 中的 `.cae` 二进制文件不直接解析，当前读取 `.jnl` 作为参考模式来源。
-- PDF/CAD 图纸理解还未接入，后续应作为 `DrawingAgent` 或 `DocumentAgent` 的前置能力。
-- 壳单元、实体单元、局部精细模型、连接器支座、规范荷载组合将在后续版本扩展。
+## Next Steps
+
+Recommended next development steps:
+
+1. Add a `DrawingAgent` for PDF/CAD geometry extraction.
+2. Add a `SectionAgent` for box girder, slab, arch, pylon, and cable section parsing.
+3. Add shell and mixed modelling paths.
+4. Add connector-based support and bearing modelling.
+5. Add load-combination and vehicle-load agents.
+6. Add automated reaction balance checks after analysis.
+
