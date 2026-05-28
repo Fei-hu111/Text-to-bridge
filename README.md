@@ -221,6 +221,30 @@ max_displacement = 1.3075553125059352
 max_stress = 1051906.5
 ```
 
+## V2 Solid Model Visualization
+
+The following figures show the generated solid Abaqus model and its response fields.
+
+### Figure 1. Model and Loads
+
+![V2 solid model and loads](docs/images/v2_model_load.png)
+
+### Figure 2. Mesh Model
+
+![V2 solid mesh model](docs/images/v2_mesh.png)
+
+### Figure 3. Stress Field
+
+![V2 solid stress field](docs/images/v2_stress.png)
+
+### Figure 4. Displacement Field
+
+![V2 solid displacement field](docs/images/v2_displacement.png)
+
+### Figure 5. Reaction Force Field
+
+![V2 solid reaction force field](docs/images/v2_reaction.png)
+
 ## Testing
 
 Run the standard-library test suite:
@@ -253,4 +277,3 @@ Current coverage includes:
 - Add vehicle, temperature, wind, seismic, and load-combination agents.
 - Improve ODB extraction for solid support reaction aggregation.
 - Add result reasonableness checks such as total reaction versus total applied load.
-

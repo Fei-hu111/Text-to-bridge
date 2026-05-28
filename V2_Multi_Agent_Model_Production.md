@@ -230,6 +230,28 @@ max_displacement = 1.3075553125059352
 max_stress = 1051906.5
 ```
 
+## Solid Model Visualization
+
+### Figure 1. Model and Loads
+
+![Solid model and loads](docs/images/v2_model_load.png)
+
+### Figure 2. Mesh Model
+
+![Solid mesh model](docs/images/v2_mesh.png)
+
+### Figure 3. Stress Field
+
+![Solid stress field](docs/images/v2_stress.png)
+
+### Figure 4. Displacement Field
+
+![Solid displacement field](docs/images/v2_displacement.png)
+
+### Figure 5. Reaction Force Field
+
+![Solid reaction force field](docs/images/v2_reaction.png)
+
 ## Current Limitations
 
 - Drawing/PDF/CAD recognition is not implemented yet.
@@ -248,4 +270,3 @@ Recommended next development steps:
 4. Add connector-based support and bearing modelling.
 5. Add load-combination and vehicle-load agents.
 6. Add automated reaction balance checks after analysis.
-
