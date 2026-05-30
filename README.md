@@ -2,13 +2,14 @@
 
 Text to Bridge is a Python + Abaqus workflow for automated bridge finite element model production, analysis execution, diagnosis, rule-based repair, result extraction, and reporting.
 
-The project currently contains five complementary workflows:
+The project currently contains six complementary workflow releases:
 
 - **V1 Analysis Workflow**: reads a structured bridge JSON file, generates an Abaqus `.inp`, runs Abaqus, diagnoses errors, applies deterministic repairs, extracts results, and writes reports.
 - **V2 Multi-Agent Model Production Workflow**: uses deterministic agents to transform a bridge semantic model into a reviewable Abaqus/CAE Python script, then optionally builds `.cae` and `.inp` files through Abaqus/CAE noGUI.
 - **V3 Rigid-Frame Design Workflow**: references local rigid-frame Abaqus samples and generates an optimized three-span continuous rigid-frame bridge with variable girder depth, monolithic solid girder-pier geometry, support definitions, and prestress tendon layout.
 - **V4 Hollow-Box Rigid-Frame Workflow**: upgrades the rigid-frame solid model to a hollow box-girder representation with C3D8R top slab, webs, bottom slab, embedded tendon paths, and rule-based section/prestress control.
 - **V5 Construction-Solid Rigid-Frame Workflow**: adds construction-style solid regions, including end solid blocks, pier-top solid diaphragm zones, and variable bottom slab thickness near supports.
+- **V6 Real Prestress Thermal-Strain Workflow**: applies bonded tendon prestress through temperature-induced strain in embedded T3D2 elements, with a dedicated prestress step and tendon-by-tendon verification output.
 
 The system is designed as a future LLM-agent toolchain, but the current implementation is intentionally deterministic and does not call external LLM APIs.
 
@@ -47,6 +48,7 @@ bridge_fem_agent/
     solid_builder.py
     hollow_box_builder.py
     construction_solid_builder.py
+    prestress.py
     workflow.py
 
   tools/
@@ -483,6 +485,63 @@ max_stress = 76677904.0
 
 Detailed V5 design notes are available in [docs/V5_construction_solid_rigid_frame_design.md](docs/V5_construction_solid_rigid_frame_design.md).
 
+## V6: Real Prestress Through Embedded Tendon Thermal Strain
+
+V6 keeps the V5 construction-solid geometry and replaces the default upward
+prestress balancing load with tendon-level strain action. The bonded tendon
+approximation uses:
+
+- concrete `C3D8R` elements;
+- prestress tendon `T3D2` elements;
+- `EmbeddedRegion` tendon-to-concrete constraints;
+- `PRESTRESS_STEEL` thermal expansion coefficient `1.2e-5 / C`;
+- one `Prestress` step followed by one `ServiceLoad` step;
+- named tendon node sets and `*Temperature` fields;
+- span-local positive-moment tendons, pier-top negative-moment tendons, and paired continuity compression tendons;
+- no default `Load-prestress-equivalent`.
+
+Generate and build the default thermal-strain model:
+
+```powershell
+python main.py --workflow rigid-frame-v5 --spans 90 160 90 --pier-height 60 --workdir runs\rigid_frame_v6_thermal_prestress_cae_90_160_90 --prestress-mode thermal_strain --build-cae
+```
+
+Available modes:
+
+```text
+thermal_strain   default bonded-tendon prestress approximation
+equivalent_load  optional legacy upward-load mode
+none             tendon geometry without prestress action
+```
+
+Every rigid-frame run writes `prestress_verification.json`. For each tendon
+group it records effective force `Pe`, total area `Ap`, effective stress
+`sigma_pe`, equivalent temperature reduction `delta_T`, and a `900-1400 MPa`
+reasonableness check.
+
+The verified `90 + 160 + 90 m` local run completed successfully in
+`runs/rigid_frame_v6_prestress_balanced8_cae_90_160_90`. The requested effective
+tendon stress was `906.750 MPa`. Enhanced ODB extraction reported:
+
+```text
+Prestress tendon S11          = 766.4 to 955.0 MPa
+Prestress vertical U2 range   = -0.0434 to +0.0404 m
+Prestress concrete S11 p95/p99 = 0.395 / 0.863 MPa
+Service max |U|               = 0.1998 m
+Service concrete S11 p95/p99  = 1.130 / 2.801 MPa
+```
+
+Compared with the first thermal-strain run, the optimized layout reduces the
+service displacement and suppresses broad concrete tensile stress. Remaining
+peak tensile values are local 3D concentrations near embedded tendon/support
+regions and should be checked with refined local anchorage and support models.
+V6 is intentionally a bonded-tendon approximation; duct friction, anchorage
+slip, sequential tensioning, creep, shrinkage, and staged losses are future
+extensions.
+
+Detailed V6 design and validation notes are available in
+[docs/V6_real_prestress_thermal_strain_design.md](docs/V6_real_prestress_thermal_strain_design.md).
+
 ## Testing
 
 Run the standard-library test suite:
@@ -501,6 +560,7 @@ Current coverage includes:
 - V3 solid rigid-frame script generation with embedded tendon constraints
 - V4 hollow-box rigid-frame script generation with C3D8R concrete blocks and embedded T3D2 tendon paths
 - V5 construction-solid script generation with solid end blocks, pier diaphragm zones, and variable bottom slab thickness
+- V6 thermal-strain prestress planning, named tendon temperature sets, and optional legacy mode selection
 
 ## Design Principles
 
@@ -519,6 +579,6 @@ Current coverage includes:
 - Add vehicle, temperature, wind, seismic, and load-combination agents.
 - Improve ODB extraction for solid support reaction aggregation.
 - Add result reasonableness checks such as total reaction versus total applied load.
-- Upgrade V3/V4 prestress from equivalent balancing load to calibrated initial stress/strain and staged construction.
+- Add staged construction, duct friction, anchorage slip, creep, shrinkage, and time-dependent prestress loss.
 - Add drawing-driven hollow-box and diaphragm section extraction for V4/V5.
 - Add element-set-based result extraction for concrete stress and tendon stress separately.

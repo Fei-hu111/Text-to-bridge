@@ -17,6 +17,8 @@ class RigidFrameTargets:
     max_deflection_ratio: float = 600.0
     max_compressive_stress_pa: float = 1.8e7
     max_tensile_stress_pa: float = 1.8e6
+    max_prestress_tensile_stress_pa: float = 0.0
+    max_initial_camber_ratio: float = 4000.0
     max_iterations: int = 8
 
 
@@ -42,6 +44,8 @@ class RigidFrameInput:
     roadway_load_pa: float = 5000.0
     human_load_pa: float = 2500.0
     second_dead_load_pa: float = 2500.0
+    prestress_mode: str = "thermal_strain"
+    prestress_effective_ratio: float = 0.65
     materials: RigidFrameMaterials = field(default_factory=RigidFrameMaterials)
     targets: RigidFrameTargets = field(default_factory=RigidFrameTargets)
 
@@ -88,6 +92,12 @@ class RigidFrameInput:
             raise RigidFrameSchemaError("All spans must be positive.")
         materials = _materials_from_dict(data.get("materials", {}))
         targets = _targets_from_dict(data.get("targets", {}), data.get("max_design_iterations"))
+        prestress_mode = str(data.get("prestress_mode", "thermal_strain")).strip().lower()
+        if prestress_mode not in {"thermal_strain", "equivalent_load", "none"}:
+            raise RigidFrameSchemaError("prestress_mode must be thermal_strain, equivalent_load, or none.")
+        prestress_effective_ratio = float(data.get("prestress_effective_ratio", 0.65))
+        if not 0.0 < prestress_effective_ratio <= 1.0:
+            raise RigidFrameSchemaError("prestress_effective_ratio must be greater than 0 and no greater than 1.")
         return cls(
             project_name=project_name,
             spans_m=spans_m,
@@ -96,6 +106,8 @@ class RigidFrameInput:
             roadway_load_pa=float(data.get("roadway_load_pa", 5000.0)),
             human_load_pa=float(data.get("human_load_pa", 2500.0)),
             second_dead_load_pa=float(data.get("second_dead_load_pa", 2500.0)),
+            prestress_mode=prestress_mode,
+            prestress_effective_ratio=prestress_effective_ratio,
             materials=materials,
             targets=targets,
         )
@@ -122,6 +134,8 @@ def _targets_from_dict(data: dict[str, Any], max_iterations: Any = None) -> Rigi
         max_deflection_ratio=float(data.get("max_deflection_ratio", defaults.max_deflection_ratio)),
         max_compressive_stress_pa=float(data.get("max_compressive_stress_pa", defaults.max_compressive_stress_pa)),
         max_tensile_stress_pa=float(data.get("max_tensile_stress_pa", defaults.max_tensile_stress_pa)),
+        max_prestress_tensile_stress_pa=float(data.get("max_prestress_tensile_stress_pa", defaults.max_prestress_tensile_stress_pa)),
+        max_initial_camber_ratio=float(data.get("max_initial_camber_ratio", defaults.max_initial_camber_ratio)),
         max_iterations=int(max_iterations if max_iterations is not None else data.get("max_iterations", defaults.max_iterations)),
     )
 
@@ -130,4 +144,3 @@ def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
-

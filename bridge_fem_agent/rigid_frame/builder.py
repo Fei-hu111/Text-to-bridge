@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from bridge_fem_agent.rigid_frame.design import RigidFrameDesign, equivalent_box_properties, height_at_station
+from bridge_fem_agent.rigid_frame.prestress import tendon_prestress_plan, write_prestress_verification
 from bridge_fem_agent.rigid_frame.schema import RigidFrameInput
 
 LOGGER = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ class RigidFrameAbaqusBuilder:
 
     def write(self, task: RigidFrameInput, design: RigidFrameDesign, workdir: Path) -> Path:
         workdir.mkdir(parents=True, exist_ok=True)
+        write_prestress_verification(task, design, workdir)
         script_path = workdir / f"{task.project_name}_rigid_frame_build.py"
         script_path.write_text(self.render(task, design), encoding="utf-8")
         LOGGER.info("Wrote V3 rigid-frame Abaqus build script: %s", script_path)
@@ -180,7 +182,8 @@ def build_model():
     model.Gravity(name="Load-G", createStepName=active_step, comp2=-9.81, distributionType=UNIFORM, field="")
     girder_region = regionToolset.Region(edges=instance.edges[:])
     model.LineLoad(name="Load-road", createStepName=active_step, region=girder_region, comp2=-plan["road_line_load_n_m"], distributionType=UNIFORM, field="")
-    model.LineLoad(name="Load-prestress-equivalent", createStepName=active_step, region=girder_region, comp2=plan["prestress_balancing_load_n_m"], distributionType=UNIFORM, field="")
+    if plan["prestress_mode"] == "equivalent_load":
+        model.LineLoad(name="Load-prestress-equivalent", createStepName=active_step, region=girder_region, comp2=plan["prestress_balancing_load_n_m"], distributionType=UNIFORM, field="")
 
     model.FieldOutputRequest(name="F-Output-RigidFrame", createStepName=active_step, variables=("S", "U", "RF"))
     model.HistoryOutputRequest(name="H-Output-PierBase", createStepName=active_step, variables=("RF1", "RF2", "RF3"), region=assembly.sets["PIER01_BASE"])
@@ -232,7 +235,8 @@ if __name__ == "__main__":
             "pier_section_depth_m": max(2.5, task.deck_width_m * 0.22),
             "mesh_size_m": max(min(task.main_span_m / 40.0, 4.0), 1.0),
             "materials": task.materials.__dict__,
-            "tendon_groups": [group.__dict__ for group in design.tendon_groups],
+            "prestress_mode": task.prestress_mode,
+            "tendon_groups": [tendon_prestress_plan(group, task) for group in design.tendon_groups],
             "road_line_load_n_m": road_line_load,
             "prestress_balancing_load_n_m": prestress_balancing,
             "estimated_area_m2": area,

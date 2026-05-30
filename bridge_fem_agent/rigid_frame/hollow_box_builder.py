@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from bridge_fem_agent.rigid_frame.design import RigidFrameDesign, height_at_station
+from bridge_fem_agent.rigid_frame.prestress import PRESTRESS_ALPHA_PER_C, tendon_prestress_plan, write_prestress_verification
 from bridge_fem_agent.rigid_frame.schema import RigidFrameInput
 
 LOGGER = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ class HollowBoxRigidFrameBuilder:
 
     def write(self, task: RigidFrameInput, design: RigidFrameDesign, workdir: Path) -> Path:
         workdir.mkdir(parents=True, exist_ok=True)
+        write_prestress_verification(task, design, workdir)
         script_path = workdir / f"{task.project_name}_rigid_frame_hollow_box_build.py"
         script_path.write_text(self.render(task, design), encoding="utf-8")
         LOGGER.info("Wrote V4 hollow-box rigid-frame Abaqus build script: %s", script_path)
@@ -197,7 +199,7 @@ def build_tendon_mesh(plan, tendon):
         ratio = float(index) / float(count)
         x = tendon["start_x_m"] + (tendon["end_x_m"] - tendon["start_x_m"]) * ratio
         props = station_props(plan, x)
-        if tendon["role"] == "pier_top_negative_moment":
+        if "top" in tendon["role"]:
             y = -0.50 * props["top_slab_thickness_m"]
         else:
             y = -props["height_m"] + 0.50 * props["bottom_slab_thickness_m"]
@@ -231,6 +233,7 @@ def build_model():
     model.Material(name="PRESTRESS_STEEL")
     model.materials["PRESTRESS_STEEL"].Density(table=((7850.0,),))
     model.materials["PRESTRESS_STEEL"].Elastic(table=((materials["prestress_elastic_modulus_pa"], 0.3),))
+    model.materials["PRESTRESS_STEEL"].Expansion(table=((plan["prestress_alpha_per_c"],),))
 
     concrete_part = model.Part(name="HollowBoxRigidFrame", dimensionality=THREE_D, type=DEFORMABLE_BODY)
     nodes, girder_elements, pier_elements, girder_labels, pier_labels = build_concrete_mesh(plan)
@@ -269,6 +272,9 @@ def build_model():
     for index, pier in enumerate(plan["piers"], start=1):
         node_set_by_box("PIER%02d_BASE" % index, pier["x"] - pier["width_m"] / 2.0, pier["x"] + pier["width_m"] / 2.0, -pier["height_m"], -pier["height_m"])
 
+    model.StaticStep(name="Prestress", previous="Initial", initialInc=0.1, maxInc=0.2, nlgeom=OFF)
+    model.StaticStep(name="ServiceLoad", previous="Prestress", initialInc=0.1, maxInc=0.2, nlgeom=OFF)
+
     for tendon in plan["tendon_groups"]:
         tendon_part = model.Part(name=abaqus_name(tendon["name"]), dimensionality=THREE_D, type=DEFORMABLE_BODY)
         tendon_nodes, tendon_elements = build_tendon_mesh(plan, tendon)
@@ -282,6 +288,7 @@ def build_model():
         tendon_part.setElementType(regions=(tendon_part.elements[:],), elemTypes=(ElemType(elemCode=T3D2, elemLibrary=STANDARD),))
         tendon_instance = assembly.Instance(name=abaqus_name(tendon["name"] + "-1"), part=tendon_part, dependent=ON)
         assembly.Set(elements=tendon_instance.elements[:], name=abaqus_name(tendon["name"] + "_EMBEDDED_ELEMENTS"))
+        assembly.Set(nodes=tendon_instance.nodes[:], name=abaqus_name(tendon["name"] + "_PRESTRESS_NODES"))
         model.EmbeddedRegion(
             name=abaqus_name("Embed_" + tendon["name"]),
             embeddedRegion=regionToolset.Region(elements=tendon_instance.elements[:]),
@@ -291,8 +298,26 @@ def build_model():
             fractionalTolerance=0.05,
             toleranceMethod=BOTH,
         )
+        print(
+            "Tendon %s: Pe=%.6e N Ap=%.6e m2 sigma_pe=%.3f MPa delta_T=%.3f C"
+            % (
+                tendon["name"],
+                tendon["effective_force_n"],
+                tendon["area_total_m2"],
+                tendon["effective_stress_pa"] / 1.0e6,
+                tendon["delta_temperature_c"],
+            )
+        )
+        if plan["prestress_mode"] == "thermal_strain":
+            model.Temperature(
+                name=abaqus_name("PrestressTemp_" + tendon["name"]),
+                createStepName="Prestress",
+                region=assembly.sets[abaqus_name(tendon["name"] + "_PRESTRESS_NODES")],
+                distributionType=UNIFORM,
+                crossSectionDistribution=CONSTANT_THROUGH_THICKNESS,
+                magnitudes=(tendon["delta_temperature_c"],),
+            )
 
-    model.StaticStep(name="ServiceLoad", previous="Initial", initialInc=0.1, maxInc=0.2, nlgeom=OFF)
     model.DisplacementBC(name="BC_ABUTMENT_LEFT", createStepName="Initial", region=assembly.sets["ABUTMENT_LEFT"], u1=0.0, u2=0.0, u3=0.0)
     model.DisplacementBC(name="BC_ABUTMENT_RIGHT", createStepName="Initial", region=assembly.sets["ABUTMENT_RIGHT"], u1=UNSET, u2=0.0, u3=0.0)
     for index in range(1, 3):
@@ -302,8 +327,10 @@ def build_model():
     road_force = -plan["road_line_load_n_m"] * plan["total_length_m"] / max(len(top_nodes), 1)
     prestress_force = plan["prestress_balancing_load_n_m"] * plan["total_length_m"] / max(len(top_nodes), 1)
     model.ConcentratedForce(name="Load-road-equivalent", createStepName="ServiceLoad", region=assembly.sets["DECK_TOP_NODES"], cf2=road_force)
-    model.ConcentratedForce(name="Load-prestress-equivalent", createStepName="ServiceLoad", region=assembly.sets["DECK_TOP_NODES"], cf2=prestress_force)
+    if plan["prestress_mode"] == "equivalent_load":
+        model.ConcentratedForce(name="Load-prestress-equivalent", createStepName="ServiceLoad", region=assembly.sets["DECK_TOP_NODES"], cf2=prestress_force)
 
+    model.FieldOutputRequest(name="F-Output-Prestress", createStepName="Prestress", variables=("S", "U", "RF"))
     model.FieldOutputRequest(name="F-Output-HollowBox", createStepName="ServiceLoad", variables=("S", "U", "RF"))
     model.HistoryOutputRequest(name="H-Output-PierBase", createStepName="ServiceLoad", variables=("RF1", "RF2", "RF3"), region=assembly.sets["PIER01_BASE"])
     job = mdb.Job(name=project, model=model_name, description="Generated V4 hollow-box rigid-frame bridge", type=ANALYSIS, memory=90, memoryUnits=PERCENTAGE, echoPrint=OFF, modelPrint=OFF, contactPrint=OFF, historyPrint=OFF)
@@ -332,11 +359,14 @@ if __name__ == "__main__":
             "mesh_size_m": max(min(task.main_span_m / 60.0, 3.5), 1.5),
             "stations": [self._station_plan(task, design, x) for x in stations],
             "materials": task.materials.__dict__,
+            "prestress_mode": task.prestress_mode,
+            "prestress_alpha_per_c": PRESTRESS_ALPHA_PER_C,
+            "prestress_effective_ratio": task.prestress_effective_ratio,
             "piers": [
                 {"name": "pier01", "x": task.pier_stations_m[0], "height_m": task.resolved_pier_height_m, "width_m": pier_width, **pier_z},
                 {"name": "pier02", "x": task.pier_stations_m[1], "height_m": task.resolved_pier_height_m, "width_m": pier_width, **pier_z},
             ],
-            "tendon_groups": [group.__dict__ for group in design.tendon_groups],
+            "tendon_groups": [tendon_prestress_plan(group, task) for group in design.tendon_groups],
             "road_line_load_n_m": road_line_load,
             "prestress_balancing_load_n_m": prestress_balancing,
             "response": design.response.__dict__ if design.response else None,

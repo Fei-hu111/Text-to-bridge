@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from bridge_fem_agent.rigid_frame.design import RigidFrameDesign, height_at_station
+from bridge_fem_agent.rigid_frame.prestress import PRESTRESS_ALPHA_PER_C, tendon_prestress_plan, write_prestress_verification
 from bridge_fem_agent.rigid_frame.schema import RigidFrameInput
 
 LOGGER = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ class RigidFrameSolidAbaqusBuilder:
 
     def write(self, task: RigidFrameInput, design: RigidFrameDesign, workdir: Path) -> Path:
         workdir.mkdir(parents=True, exist_ok=True)
+        write_prestress_verification(task, design, workdir)
         script_path = workdir / f"{task.project_name}_rigid_frame_solid_build.py"
         script_path.write_text(self.render(task, design), encoding="utf-8")
         LOGGER.info("Wrote V3 rigid-frame solid Abaqus build script: %s", script_path)
@@ -33,9 +35,9 @@ Run with:
     abaqus cae noGUI={task.project_name}_rigid_frame_solid_build.py
 
 The model uses a monolithic solid extrusion for the main girder and piers.
-Prestress tendons are embedded truss paths inside the concrete host. Their
-global prestress action is represented by an equivalent upward service
-balancing load in this V3 model.
+Prestress tendons are embedded truss paths inside the concrete host. Thermal
+contraction is the default prestress action; the old equivalent balancing
+load remains available only as an explicit legacy mode.
 """
 
 from __future__ import print_function
@@ -86,6 +88,7 @@ def build_model():
     model.Material(name="PRESTRESS_STEEL")
     model.materials["PRESTRESS_STEEL"].Density(table=((7850.0,),))
     model.materials["PRESTRESS_STEEL"].Elastic(table=((materials["prestress_elastic_modulus_pa"], 0.3),))
+    model.materials["PRESTRESS_STEEL"].Expansion(table=((plan["prestress_alpha_per_c"],),))
 
     sketch = model.ConstrainedSketch(name="rigid_frame_solid_profile", sheetSize=max(100.0, plan["total_length_m"] * 1.25))
     outline = plan["outline_xy"]
@@ -183,8 +186,12 @@ def build_model():
         assembly.Set(nodes=tendon_instance.nodes[:], name=abaqus_name(tendon["name"] + "_PATH_NODES"))
         assembly.Set(edges=tendon_instance.edges[:], name=abaqus_name(tendon["name"] + "_EMBEDDED_EDGES"))
 
+    model.StaticStep(name="Prestress", previous="Initial", initialInc=0.1, maxInc=0.2, nlgeom=OFF)
+    model.StaticStep(name="ServiceLoad", previous="Prestress", initialInc=0.1, maxInc=0.2, nlgeom=OFF)
+
     host_region = regionToolset.Region(cells=instance.cells[:])
     for tendon in plan["tendon_groups"]:
+        tendon_instance = assembly.instances[abaqus_name(tendon["name"] + "-1")]
         embedded_region = regionToolset.Region(edges=assembly.sets[abaqus_name(tendon["name"] + "_EMBEDDED_EDGES")].edges)
         model.EmbeddedRegion(
             name=abaqus_name("Embed_" + tendon["name"]),
@@ -195,8 +202,26 @@ def build_model():
             fractionalTolerance=0.05,
             toleranceMethod=BOTH,
         )
+        print(
+            "Tendon %s: Pe=%.6e N Ap=%.6e m2 sigma_pe=%.3f MPa delta_T=%.3f C"
+            % (
+                tendon["name"],
+                tendon["effective_force_n"],
+                tendon["area_total_m2"],
+                tendon["effective_stress_pa"] / 1.0e6,
+                tendon["delta_temperature_c"],
+            )
+        )
+        if plan["prestress_mode"] == "thermal_strain":
+            model.Temperature(
+                name=abaqus_name("PrestressTemp_" + tendon["name"]),
+                createStepName="Prestress",
+                region=assembly.sets[abaqus_name(tendon["name"] + "_PATH_NODES")],
+                distributionType=UNIFORM,
+                crossSectionDistribution=CONSTANT_THROUGH_THICKNESS,
+                magnitudes=(tendon["delta_temperature_c"],),
+            )
 
-    model.StaticStep(name="ServiceLoad", previous="Initial", initialInc=0.1, maxInc=0.2, nlgeom=OFF)
     model.DisplacementBC(name="BC_ABUTMENT_LEFT", createStepName="Initial", region=assembly.sets["ABUTMENT_LEFT"], u1=0.0, u2=0.0, u3=0.0)
     model.DisplacementBC(name="BC_ABUTMENT_RIGHT", createStepName="Initial", region=assembly.sets["ABUTMENT_RIGHT"], u1=UNSET, u2=0.0, u3=0.0)
     for index in range(1, 3):
@@ -205,8 +230,10 @@ def build_model():
     road_force = -plan["road_line_load_n_m"] * plan["total_length_m"] / max(len(top_nodes), 1)
     prestress_force = plan["prestress_balancing_load_n_m"] * plan["total_length_m"] / max(len(top_nodes), 1)
     model.ConcentratedForce(name="Load-road-equivalent", createStepName="ServiceLoad", region=assembly.sets["DECK_TOP_NODES"], cf2=road_force)
-    model.ConcentratedForce(name="Load-prestress-equivalent", createStepName="ServiceLoad", region=assembly.sets["DECK_TOP_NODES"], cf2=prestress_force)
+    if plan["prestress_mode"] == "equivalent_load":
+        model.ConcentratedForce(name="Load-prestress-equivalent", createStepName="ServiceLoad", region=assembly.sets["DECK_TOP_NODES"], cf2=prestress_force)
 
+    model.FieldOutputRequest(name="F-Output-Prestress", createStepName="Prestress", variables=("S", "U", "RF"))
     model.FieldOutputRequest(name="F-Output-RigidFrameSolid", createStepName="ServiceLoad", variables=("S", "U", "RF"))
     model.HistoryOutputRequest(name="H-Output-PierBase", createStepName="ServiceLoad", variables=("RF1", "RF2", "RF3"), region=assembly.sets["PIER01_BASE"])
 
@@ -254,6 +281,9 @@ if __name__ == "__main__":
             "end_depth_m": height_at_station(task, design.section, 0.0),
             "mesh_size_m": max(min(task.main_span_m / 48.0, 4.0), 1.5),
             "materials": task.materials.__dict__,
+            "prestress_mode": task.prestress_mode,
+            "prestress_alpha_per_c": PRESTRESS_ALPHA_PER_C,
+            "prestress_effective_ratio": task.prestress_effective_ratio,
             "tendon_groups": [self._tendon_plan(task, design, group) for group in design.tendon_groups],
             "road_line_load_n_m": road_line_load,
             "prestress_balancing_load_n_m": prestress_balancing,
@@ -285,11 +315,11 @@ if __name__ == "__main__":
     def _tendon_plan(self, task: RigidFrameInput, design: RigidFrameDesign, group: Any) -> dict[str, Any]:
         mid_x = 0.5 * (group.start_x_m + group.end_x_m)
         local_depth = height_at_station(task, design.section, mid_x)
-        if group.eccentricity_m >= 0:
+        if "top" in group.role or group.eccentricity_m >= 0:
             path_y = -max(0.35, 0.18 * local_depth)
         else:
             path_y = -max(0.50, 0.82 * local_depth)
-        data = group.__dict__.copy()
+        data = tendon_prestress_plan(group, task)
         data["path_y_m"] = path_y
         return data
 

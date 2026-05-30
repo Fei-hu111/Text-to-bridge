@@ -58,6 +58,7 @@ class RigidFrameV3Workflow:
         else:
             script_path = self.solid_builder.write(task, final_design, workdir)
         report_path.write_text(self._markdown_report(task, history, script_path, model_level), encoding="utf-8")
+        prestress_verification_path = workdir / "prestress_verification.json"
 
         cae_result = None
         if build_cae:
@@ -82,6 +83,7 @@ class RigidFrameV3Workflow:
             "final_design": str(final_path),
             "optimization_report": str(report_path),
             "build_script": str(script_path),
+            "prestress_verification": str(prestress_verification_path),
             "cae_result": cae_result,
             "report": str(workdir / report_filename),
         }
@@ -150,6 +152,8 @@ class RigidFrameV3Workflow:
             f"- Pier height: `{task.resolved_pier_height_m:.3f}` m",
             f"- Deck width: `{task.deck_width_m:.3f}` m",
             f"- Model level: `{model_level}`",
+            f"- Prestress mode: `{task.prestress_mode}`",
+            f"- Prestress effective ratio: `{task.prestress_effective_ratio:.3f}`",
             f"- Iterations: `{len(history)}`",
             f"- Build script: `{script_path}`",
             "",
@@ -163,6 +167,16 @@ class RigidFrameV3Workflow:
         ]
         for group in final.tendon_groups:
             lines.append(f"- `{group.name}` role=`{group.role}` count=`{group.count}` eccentricity=`{group.eccentricity_m:.3f}` m")
+        lines.extend(
+            [
+                "",
+                "## V6 Prestress Validation",
+                "- `thermal_strain` applies tendon temperature reduction in a dedicated `Prestress` step.",
+                "- Review the prestress-only frame for upward camber tendency.",
+                "- Review tendon `S11` against the requested effective prestress and concrete stress against `-P/A +/- Pe/W`.",
+                "- This bonded-tendon approximation does not yet include friction, anchorage slip, creep, shrinkage, or staged losses.",
+            ]
+        )
         lines.extend(["", "## Estimated Response"])
         if response:
             lines.extend(
@@ -171,8 +185,11 @@ class RigidFrameV3Workflow:
                     f"- Max deflection: `{response.max_deflection_m:.6f}` m",
                     f"- Deflection limit: `{response.deflection_limit_m:.6f}` m",
                     f"- Deflection ratio: `L/{response.deflection_ratio:.1f}`",
+                    f"- Prestress-stage camber estimate: `{response.initial_camber_m:.6f}` m",
+                    f"- Prestress-stage camber limit: `{response.initial_camber_limit_m:.6f}` m",
                     f"- Max compressive stress: `{response.max_compressive_stress_pa:.3e}` Pa",
                     f"- Max tensile stress: `{response.max_tensile_stress_pa:.3e}` Pa",
+                    f"- Prestress-stage tensile stress estimate: `{response.prestress_stage_tensile_stress_pa:.3e}` Pa",
                 ]
             )
         lines.extend(["", "## Optimization History"])

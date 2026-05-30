@@ -39,6 +39,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--deck-width", type=float, default=12.5, help="Deck width for rigid-frame-v3 when --spans is used.")
     parser.add_argument("--max-design-iterations", type=int, default=8, help="Maximum V3 section/prestress design iterations.")
     parser.add_argument("--model-level", choices=["construction-solid", "hollow-solid", "solid", "beam"], default="hollow-solid", help="Model idealization for rigid-frame-v3/v4/v5.")
+    parser.add_argument("--prestress-mode", choices=["thermal_strain", "equivalent_load", "none"], help="Rigid-frame prestress action. Default: thermal_strain.")
+    parser.add_argument("--prestress-effective-ratio", type=float, help="Effective prestress force divided by jacking force. Default: 0.65.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
 
@@ -174,9 +176,13 @@ def run_rigid_frame_v3_workflow(args: argparse.Namespace) -> dict[str, object]:
         args.model_level = "hollow-solid"
     if args.input:
         task = RigidFrameInput.from_json(args.input)
-        if args.max_design_iterations:
+        if args.max_design_iterations or args.prestress_mode or args.prestress_effective_ratio is not None:
             data = task.to_dict()
             data["targets"]["max_iterations"] = args.max_design_iterations
+            if args.prestress_mode:
+                data["prestress_mode"] = args.prestress_mode
+            if args.prestress_effective_ratio is not None:
+                data["prestress_effective_ratio"] = args.prestress_effective_ratio
             task = RigidFrameInput.from_dict(data)
     elif args.spans:
         task = RigidFrameInput.from_dict(
@@ -186,6 +192,8 @@ def run_rigid_frame_v3_workflow(args: argparse.Namespace) -> dict[str, object]:
                 "pier_height_m": args.pier_height,
                 "deck_width_m": args.deck_width,
                 "max_design_iterations": args.max_design_iterations,
+                "prestress_mode": args.prestress_mode or "thermal_strain",
+                "prestress_effective_ratio": args.prestress_effective_ratio if args.prestress_effective_ratio is not None else 0.65,
             }
         )
     else:

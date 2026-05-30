@@ -258,6 +258,10 @@ class WorkflowSmokeTest(unittest.TestCase):
             self.assertIn("RigidFrameSolid", script_text)
             self.assertIn("C3D8R", script_text)
             self.assertIn("model.EmbeddedRegion", script_text)
+            self.assertIn('.Expansion(table=((plan["prestress_alpha_per_c"],),))', script_text)
+            self.assertIn('name="Prestress", previous="Initial"', script_text)
+            self.assertIn('name="ServiceLoad", previous="Prestress"', script_text)
+            self.assertIn("model.Temperature", script_text)
             self.assertIn("Load-prestress-equivalent", script_text)
             self.assertIn("PIER01_BASE", script_text)
 
@@ -293,6 +297,8 @@ class WorkflowSmokeTest(unittest.TestCase):
             self.assertIn("C3D8R", script_text)
             self.assertIn("T3D2", script_text)
             self.assertIn("model.EmbeddedRegion", script_text)
+            self.assertIn("PRESTRESS_NODES", script_text)
+            self.assertIn("model.Temperature", script_text)
 
     def test_rigid_frame_v5_generates_construction_solid_script(self) -> None:
         temp_root = ROOT / "runs" / "_test_tmp"
@@ -324,10 +330,43 @@ class WorkflowSmokeTest(unittest.TestCase):
             self.assertIn("left_end_solid", script_text)
             self.assertIn("pier01_solid", script_text)
             self.assertIn("bottom_slab_thickness_m", script_text)
+            self.assertIn("Tendon-Continuity-Top", script_text)
+            self.assertIn("Tendon-Continuity-Bottom", script_text)
             self.assertIn("mesh_controls", script_text)
             self.assertIn("axis_points", script_text)
             self.assertIn("C3D8R", script_text)
             self.assertIn("model.EmbeddedRegion", script_text)
+            self.assertIn("PRESTRESS_NODES", script_text)
+            self.assertIn("model.Temperature", script_text)
+            self.assertIn('if plan["prestress_mode"] == "equivalent_load":', script_text)
+            verification = json.loads((workdir / "prestress_verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(verification["prestress_mode"], "thermal_strain")
+            self.assertTrue(all(item["stress_reasonable"] for item in verification["tendon_groups"]))
+            self.assertTrue(all(item["delta_temperature_c"] < 0.0 for item in verification["tendon_groups"]))
+
+    def test_rigid_frame_v5_supports_legacy_equivalent_prestress_mode(self) -> None:
+        temp_root = ROOT / "runs" / "_test_tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as tmp:
+            workdir = Path(tmp) / "rigid_frame_v5_equivalent"
+            code = main([
+                "--workflow",
+                "rigid-frame-v5",
+                "--spans",
+                "90",
+                "160",
+                "90",
+                "--pier-height",
+                "60",
+                "--workdir",
+                str(workdir),
+                "--prestress-mode",
+                "equivalent_load",
+            ])
+
+            self.assertEqual(code, 0)
+            verification = json.loads((workdir / "prestress_verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(verification["prestress_mode"], "equivalent_load")
 
 
 if __name__ == "__main__":
