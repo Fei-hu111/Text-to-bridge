@@ -20,6 +20,7 @@ from bridge_fem_agent.results.report_writer import ReportWriter
 from bridge_fem_agent.runner.abaqus_runner import AbaqusRunner
 from bridge_fem_agent.runner.job_monitor import JobMonitor
 from bridge_fem_agent.rigid_frame.schema import RigidFrameInput
+from bridge_fem_agent.rigid_frame.v7_workflow import RigidFrameV7Workflow
 from bridge_fem_agent.rigid_frame.workflow import RigidFrameV3Workflow
 from bridge_fem_agent.schemas.bridge_schema import BridgeTask
 
@@ -28,7 +29,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Bridge FEM Agent Workflow")
     parser.add_argument("--input", type=Path, help="Bridge task JSON file.")
     parser.add_argument("--workdir", required=True, type=Path, help="Run directory for generated files.")
-    parser.add_argument("--workflow", choices=["analysis", "model-production", "rigid-frame-v3", "rigid-frame-v4", "rigid-frame-v5"], default="analysis", help="Run V1 analysis, V2 model production, V3 rigid-frame design, V4 hollow-box design, or V5 construction-solid design.")
+    parser.add_argument("--workflow", choices=["analysis", "model-production", "rigid-frame-v3", "rigid-frame-v4", "rigid-frame-v5", "rigid-frame-v7"], default="analysis", help="Run V1 analysis, V2 model production, V3-V5 rigid-frame generation, or the V7 closed-loop rigid-frame workflow.")
     parser.add_argument("--max-repairs", type=int, default=WorkflowConfig.default_max_repairs)
     parser.add_argument("--dry-run", action="store_true", help="Run workflow without Abaqus installed.")
     parser.add_argument("--abaqus-command", default=WorkflowConfig().abaqus_command)
@@ -41,6 +42,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model-level", choices=["construction-solid", "hollow-solid", "solid", "beam"], default="hollow-solid", help="Model idealization for rigid-frame-v3/v4/v5.")
     parser.add_argument("--prestress-mode", choices=["thermal_strain", "equivalent_load", "none"], help="Rigid-frame prestress action. Default: thermal_strain.")
     parser.add_argument("--prestress-effective-ratio", type=float, help="Effective prestress force divided by jacking force. Default: 0.65.")
+    parser.add_argument("--design-code-profile", choices=["jtg3362-conservative", "en1992-2-conservative"], default="jtg3362-conservative", help="V7 conservative preliminary review profile.")
+    parser.add_argument("--v7-max-iterations", type=int, default=2, help="Maximum number of V7 ODB-driven adjustment rounds after the initial candidate.")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args(argv)
 
@@ -207,6 +210,45 @@ def run_rigid_frame_v3_workflow(args: argparse.Namespace) -> dict[str, object]:
     return report
 
 
+def run_rigid_frame_v7_workflow(args: argparse.Namespace) -> dict[str, object]:
+    workdir = WorkflowConfig.ensure_workdir(args.workdir)
+    setup_logging(workdir, args.log_level)
+    logger = logging.getLogger(__name__)
+    if args.input:
+        task = RigidFrameInput.from_json(args.input)
+        data = task.to_dict()
+        if args.prestress_mode:
+            data["prestress_mode"] = args.prestress_mode
+        if args.prestress_effective_ratio is not None:
+            data["prestress_effective_ratio"] = args.prestress_effective_ratio
+        task = RigidFrameInput.from_dict(data)
+    elif args.spans:
+        task = RigidFrameInput.from_dict(
+            {
+                "project_name": f"rigid_frame_{int(args.spans[0])}_{int(args.spans[1])}_{int(args.spans[2])}",
+                "spans_m": args.spans,
+                "pier_height_m": args.pier_height,
+                "deck_width_m": args.deck_width,
+                "max_design_iterations": args.max_design_iterations,
+                "prestress_mode": args.prestress_mode or "thermal_strain",
+                "prestress_effective_ratio": args.prestress_effective_ratio if args.prestress_effective_ratio is not None else 0.65,
+            }
+        )
+    else:
+        raise ValueError("rigid-frame-v7 workflow requires either --input or --spans L1 L2 L3.")
+    logger.info("Starting V7 closed-loop workflow for spans %s.", task.spans_m)
+    workflow = RigidFrameV7Workflow(abaqus_command=args.abaqus_command)
+    report = workflow.run(
+        task,
+        workdir,
+        max_iterations=args.v7_max_iterations,
+        dry_run=args.dry_run,
+        profile_name=args.design_code_profile,
+    )
+    logger.info("V7 rigid-frame workflow finished with status '%s'.", report["status"])
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
@@ -216,6 +258,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.workflow in {"rigid-frame-v3", "rigid-frame-v4", "rigid-frame-v5"}:
             report = run_rigid_frame_v3_workflow(args)
             return 0 if report["status"] in {"pass", "needs_review"} else 2
+        if args.workflow == "rigid-frame-v7":
+            report = run_rigid_frame_v7_workflow(args)
+            return 0 if report["status"] in {"pass", "pass_with_local_review", "needs_review", "dry_run"} else 2
         report = run_workflow(args)
         return 0 if report["status"] == "success" else 2
     finally:

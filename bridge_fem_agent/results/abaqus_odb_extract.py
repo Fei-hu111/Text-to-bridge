@@ -141,11 +141,13 @@ def concrete_s11_range(frame):
     ordered = sorted(s11_values)
     p95_index = int(0.95 * (len(ordered) - 1))
     p99_index = int(0.99 * (len(ordered) - 1))
+    tensile_count = len([value for value in s11_values if value > 0.0])
     return {
         "min_s11": min_value,
         "max_s11": max_value,
         "p95_s11": ordered[p95_index],
         "p99_s11": ordered[p99_index],
+        "tensile_fraction": float(tensile_count) / float(len(s11_values)),
         "min_location": min_location,
         "max_location": max_location,
     }

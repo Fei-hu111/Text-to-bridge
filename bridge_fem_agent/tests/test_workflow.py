@@ -19,6 +19,9 @@ if str(ROOT) not in sys.path:
 from bridge_fem_agent.main import main
 from bridge_fem_agent.diagnosis.error_classifier import DiagnosticIssue
 from bridge_fem_agent.repair.repair_engine import RepairEngine
+from bridge_fem_agent.rigid_frame.design import RigidFrameDesignFactory
+from bridge_fem_agent.rigid_frame.schema import RigidFrameInput
+from bridge_fem_agent.rigid_frame.v7_agents import DesignCodeAgent, PrestressDiagnosisAgent, PrestressOptimizationAgent
 
 
 class WorkflowSmokeTest(unittest.TestCase):
@@ -367,6 +370,66 @@ class WorkflowSmokeTest(unittest.TestCase):
             self.assertEqual(code, 0)
             verification = json.loads((workdir / "prestress_verification.json").read_text(encoding="utf-8"))
             self.assertEqual(verification["prestress_mode"], "equivalent_load")
+
+    def test_rigid_frame_v7_dry_run_generates_auditable_closed_loop_candidate(self) -> None:
+        temp_root = ROOT / "runs" / "_test_tmp"
+        temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temp_root) as tmp:
+            workdir = Path(tmp) / "rigid_frame_v7"
+            code = main([
+                "--workflow",
+                "rigid-frame-v7",
+                "--spans",
+                "90",
+                "160",
+                "90",
+                "--pier-height",
+                "60",
+                "--workdir",
+                str(workdir),
+                "--dry-run",
+            ])
+
+            self.assertEqual(code, 0)
+            report = json.loads((workdir / "rigid_frame_v7_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["status"], "dry_run")
+            self.assertEqual(report["design_code_profile"]["name"], "jtg3362-conservative")
+            self.assertTrue((workdir / "v7_fast_screening_history.json").exists())
+            self.assertTrue((workdir / "iteration_00" / "candidate_design.json").exists())
+            script = (workdir / "iteration_00" / "rigid_frame_90_160_90_rigid_frame_construction_solid_build.py").read_text(encoding="utf-8")
+            self.assertIn('name="Prestress", previous="Initial"', script)
+            self.assertIn("model.Temperature", script)
+            self.assertIn("C3D8R", script)
+            self.assertIn("T3D2", script)
+
+    def test_rigid_frame_v7_diagnosis_adjusts_section_and_tendon_layout(self) -> None:
+        task = RigidFrameInput.from_dict({"project_name": "v7_rule_test", "spans_m": [90, 160, 90]})
+        design = RigidFrameDesignFactory().create_initial(task)
+        odb_results = {
+            "steps": {
+                "Prestress": {
+                    "max_displacement": 0.08,
+                    "vertical_displacement": {"min_u2": -0.06, "max_u2": 0.05},
+                    "concrete_s11": {"p95_s11": 0.8e6, "p99_s11": 2.0e6, "max_s11": 5.0e6},
+                    "tendon_s11": {"min_s11": 0.90e9, "max_s11": 1.00e9},
+                },
+                "ServiceLoad": {
+                    "max_displacement": 0.40,
+                    "concrete_s11": {"p95_s11": 2.2e6, "p99_s11": 5.0e6, "max_s11": 12.0e6},
+                    "tendon_s11": {"min_s11": 0.90e9, "max_s11": 1.00e9},
+                },
+            }
+        }
+        profile = DesignCodeAgent().resolve("jtg3362-conservative")
+        diagnosis = PrestressDiagnosisAgent().evaluate(task, profile, odb_results)
+        adjusted = PrestressOptimizationAgent().adjust(design, diagnosis, 1)
+
+        self.assertEqual(diagnosis.status, "needs_adjustment")
+        self.assertGreater(adjusted.section.midspan_height_m, design.section.midspan_height_m)
+        original_counts = {group.name: group.count for group in design.tendon_groups}
+        adjusted_counts = {group.name: group.count for group in adjusted.tendon_groups}
+        self.assertGreater(adjusted_counts["Tendon-Midspan-Bottom"], original_counts["Tendon-Midspan-Bottom"])
+        self.assertGreater(adjusted_counts["Tendon-Continuity-Top"], original_counts["Tendon-Continuity-Top"])
 
 
 if __name__ == "__main__":

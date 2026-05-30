@@ -10,6 +10,7 @@ The project currently contains six complementary workflow releases:
 - **V4 Hollow-Box Rigid-Frame Workflow**: upgrades the rigid-frame solid model to a hollow box-girder representation with C3D8R top slab, webs, bottom slab, embedded tendon paths, and rule-based section/prestress control.
 - **V5 Construction-Solid Rigid-Frame Workflow**: adds construction-style solid regions, including end solid blocks, pier-top solid diaphragm zones, and variable bottom slab thickness near supports.
 - **V6 Real Prestress Thermal-Strain Workflow**: applies bonded tendon prestress through temperature-induced strain in embedded T3D2 elements, with a dedicated prestress step and tendon-by-tendon verification output.
+- **V7 Closed-Loop Prestress Optimization Workflow**: runs a deterministic multi-agent loop that builds the construction-solid model, solves Abaqus, extracts ODB metrics, diagnoses broad concrete tension/deflection/tendon stress, adjusts section or tendon rules, and writes auditable iteration reports.
 
 The system is designed as a future LLM-agent toolchain, but the current implementation is intentionally deterministic and does not call external LLM APIs.
 
@@ -49,6 +50,8 @@ bridge_fem_agent/
     hollow_box_builder.py
     construction_solid_builder.py
     prestress.py
+    v7_agents.py
+    v7_workflow.py
     workflow.py
 
   tools/
@@ -542,6 +545,73 @@ extensions.
 Detailed V6 design and validation notes are available in
 [docs/V6_real_prestress_thermal_strain_design.md](docs/V6_real_prestress_thermal_strain_design.md).
 
+## V7: Closed-Loop Prestress Optimization
+
+V7 upgrades the V6 thermal-prestress model into a closed-loop engineering
+workflow:
+
+```text
+fast span-based screening
+  -> C3D8R/T3D2 construction-solid model generation
+  -> Abaqus/CAE noGUI
+  -> Abaqus/Standard
+  -> ODB extraction
+  -> deterministic diagnosis
+  -> section/tendon adjustment
+  -> review gate
+```
+
+Run the verified default case:
+
+```powershell
+python main.py --workflow rigid-frame-v7 --spans 90 160 90 --pier-height 60 --workdir runs\rigid_frame_v7_closed_loop_verified_90_160_90 --v7-max-iterations 2
+```
+
+Dry-run mode still generates the auditable candidate without calling Abaqus:
+
+```powershell
+python main.py --workflow rigid-frame-v7 --spans 90 160 90 --pier-height 60 --workdir runs\rigid_frame_v7_dry_run --dry-run
+```
+
+The V7 agents include:
+
+- `DesignCodeAgent`: selects a conservative preliminary review profile;
+- `PrestressDiagnosisAgent`: checks prestress camber, service displacement,
+  concrete `S11` p95/p99, tensile sampling fraction, tendon `S11`, and local
+  hotspots;
+- `PrestressOptimizationAgent`: adjusts girder depth, slab thickness, tendon
+  count, tendon eccentricity, or jacking stress;
+- `SolverRepairAgent`: classifies Standard failures for retriable numerical
+  adjustment or manual review;
+- `ReviewGateAgent`: emits `pass`, `pass_with_local_review`,
+  `needs_adjustment`, or `needs_review`.
+
+The verified `90 + 160 + 90 m` local run completed successfully in:
+
+```text
+runs/rigid_frame_v7_closed_loop_verified_90_160_90
+```
+
+The final V7 gate was:
+
+```text
+pass_with_local_review
+```
+
+Key extracted metrics:
+
+```text
+Prestress camber abs             = 0.0434 m
+Service max displacement         = 0.1998 m
+Prestress concrete S11 p95/p99   = 0.395 / 0.863 MPa
+Service concrete S11 p95/p99     = 1.130 / 2.801 MPa
+Service tendon S11               = 725.0 to 955.4 MPa
+```
+
+The only warning is a local tensile hotspot that should be reviewed with a
+refined diaphragm, support, and anchorage-zone model. Detailed V7 notes are in
+[docs/V7_closed_loop_prestress_optimization.md](docs/V7_closed_loop_prestress_optimization.md).
+
 ## Testing
 
 Run the standard-library test suite:
@@ -561,6 +631,7 @@ Current coverage includes:
 - V4 hollow-box rigid-frame script generation with C3D8R concrete blocks and embedded T3D2 tendon paths
 - V5 construction-solid script generation with solid end blocks, pier diaphragm zones, and variable bottom slab thickness
 - V6 thermal-strain prestress planning, named tendon temperature sets, and optional legacy mode selection
+- V7 closed-loop dry-run generation and deterministic ODB-diagnosis adjustment rules
 
 ## Design Principles
 
